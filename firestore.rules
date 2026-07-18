@@ -126,12 +126,14 @@ service cloud.firestore {
     match /casts/{docId} {
       allow read: if canAccessStore(resource.data.storeId);
       // 作成: admin以上・許可店舗のみ・'__all__'禁止・createdBy/updatedByは本人
+      // archived:true での作成は owner のみ許可（旧データ移行でアーカイブ済み
+      // キャストを移すため。admin以下は従来どおり archived:false のみ）
       allow create: if isAdminOrAbove()
         && canAccessStore(request.resource.data.storeId)
         && request.resource.data.storeId != '__all__'
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.archived == false;
+        && (request.resource.data.archived == false || isOwner());
       // 更新: storeId変更禁止（許可外店舗への移動を含む）・
       //       createdBy/createdAt改竄禁止・updatedByは本人
       allow update: if isAdminOrAbove()
@@ -226,12 +228,57 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ---------- インポート履歴（owner / 許可店舗のadminのみ作成） ----------
     match /importBatches/{docId} {
+      // 閲覧は許可店舗のみ（viewerは既存設計どおり読み取りは可・画面は非表示）
+      allow read: if canAccessStore(resource.data.storeId);
+      // 作成: owner または許可店舗のadminのみ。createdBy偽装・'__all__'禁止
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid;
+      // 更新: 実行完了時の件数・状態の書き込みのみ。
+      // storeId / createdBy / createdAt / fileName / targetMonth は改竄禁止
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.fileName == resource.data.fileName
+        && request.resource.data.targetMonth == resource.data.targetMonth;
+      allow delete: if false;
+    }
+
+    // ---------- 旧データ移行の実行記録（owner専用） ----------
+    match /migrationRuns/{docId} {
+      allow read: if isOwner();
+      // 作成・更新は owner のみ。createdBy偽装・startedAt/createdBy改竄禁止
+      allow create: if isOwner()
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isOwner()
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.startedAt == resource.data.startedAt;
+      allow delete: if false;
+    }
+
+    // ---------- Excelインポート照合ルール（owner / 許可店舗のadminのみ書込） ----------
+    match /nameMatchingRules/{docId} {
+      // 許可店舗外のルールは読めない。viewerは読み取りのみ（書き込み一切不可）
       allow read: if canAccessStore(resource.data.storeId);
       allow create: if isAdminOrAbove()
         && canAccessStore(request.resource.data.storeId)
-        && request.resource.data.storeId != '__all__';
-      allow update, delete: if false;
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      // 更新: storeId変更禁止・createdBy/createdAt改竄禁止・updatedByは本人
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      // 削除は不可（無効化は active:false で扱う）
+      allow delete: if false;
     }
 
     // ---------- 監査ログ（追記のみ） ----------
