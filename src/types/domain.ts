@@ -290,6 +290,8 @@ export interface WageHistoryDoc {
   newHourlyWage: number;
   effectiveMonth: string;
   reason: string;
+  /** 記録元。'manual' | 'excel-import' | 'migration'（PR3以前のデータには存在しない） */
+  source?: string;
   createdAt: Timestamp;
   createdBy: string;
 }
@@ -331,16 +333,85 @@ export function fmtDiff(v: number | null): string {
   return s + Math.abs(Math.round(v)).toLocaleString("ja-JP");
 }
 
-/** importBatches/{batchId} */
+/** インポート/移行の実行状態 */
+export const RUN_STATUSES = ["processing", "completed", "failed", "cancelled"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** importBatches/{batchId} — Excelインポート1回分の履歴 */
 export interface ImportBatchDoc {
   storeId: string;
   fileName: string;
-  targetMonth: string;
-  status: "completed" | "failed";
+  targetMonth: string; // YYYY-MM
+  status: RunStatus;
+  totalRows: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  errorCount: number;
   summary: string;
-  migrationId: string | null;
   createdAt: Timestamp;
   createdBy: string;
+  completedAt: Timestamp | null;
+}
+
+/** 画面用 id 付きインポート履歴 */
+export interface ImportBatchWithId extends ImportBatchDoc {
+  id: string;
+}
+
+/**
+ * migrationRuns/{migrationId} — 旧ローカルデータ移行1回分の記録（owner専用）。
+ * 冪等性は「決定的ドキュメントID + 既存はskip」で担保し、本コレクションは
+ * 実行履歴・監査のために保持する。
+ */
+export interface MigrationRunDoc {
+  fileName: string;
+  sourceFormat: string; // 'cm2_v4' | 'cmweb-backup_v1' 等
+  status: RunStatus;
+  summary: string;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+  createdBy: string;
+  errorSummary: string;
+}
+
+export interface MigrationRunWithId extends MigrationRunDoc {
+  id: string;
+}
+
+/** nameMatchingRules の確定内容 */
+export const RULE_DECISIONS = ["link", "new", "exclude"] as const;
+export type RuleDecision = (typeof RULE_DECISIONS)[number];
+
+/**
+ * nameMatchingRules/{ruleId} — Excelインポートの照合確定ルール。
+ * ドキュメントID = `${storeId}__${normalizedName}`（storeIdと正規化名で一意）。
+ * 一度確定したルールは次回インポートの候補判定に利用するが、
+ * リンク先キャスト不在・店舗違い・大幅な時給差・アーカイブ済み・
+ * 同名候補複数の場合は自動確定せず再確認する（importMatching参照）。
+ */
+export interface NameMatchingRuleDoc {
+  storeId: string;
+  sourceName: string;
+  normalizedName: string;
+  decision: RuleDecision;
+  linkedCastId: string | null;
+  hourlyWage: number | null; // 確定時点の時給（時給乖離の再確認判定に使用）
+  active: boolean;
+  createdAt: Timestamp;
+  createdBy: string;
+  updatedAt: Timestamp;
+  updatedBy: string;
+}
+
+export interface NameMatchingRuleWithId extends NameMatchingRuleDoc {
+  id: string;
+}
+
+/** nameMatchingRules のドキュメントID（storeId × 正規化名で決定的に一意） */
+export function nameMatchingRuleId(storeId: string, normalizedName: string): string {
+  // Firestore ドキュメントIDに '/' は使えないため置換する
+  return `${storeId}__${normalizedName.replace(/\//g, "_")}`;
 }
 
 /** auditLogs/{logId} */
