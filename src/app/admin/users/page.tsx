@@ -1,0 +1,255 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
+import {
+  approveUser,
+  changeUserRole,
+  disableUser,
+  enableUser,
+  subscribeAllUsers,
+} from "@/services/userAdminService";
+import {
+  ROLES,
+  ROLE_LABELS,
+  USER_STATUS_LABELS,
+  isOwner,
+  type Role,
+  type UserWithId,
+} from "@/types";
+
+export default function AdminUsersPage() {
+  const { userDoc, firebaseUser } = useAuth();
+  const router = useRouter();
+  const owner = isOwner(userDoc);
+
+  const [users, setUsers] = useState<UserWithId[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busyUid, setBusyUid] = useState<string | null>(null);
+
+  // owner以外はダッシュボードへ（Rules側でも読めないため二重防御）
+  useEffect(() => {
+    if (userDoc && !owner) router.replace("/dashboard");
+  }, [userDoc, owner, router]);
+
+  useEffect(() => {
+    if (!owner) return;
+    const unsub = subscribeAllUsers(setUsers, (msg) => setLoadError(msg));
+    return unsub;
+  }, [owner]);
+
+  const approvedOwnerCount = useMemo(
+    () => users.filter((u) => u.role === "owner" && u.status === "approved").length,
+    [users]
+  );
+
+  const pending = users.filter((u) => u.status === "pending");
+  const approved = users.filter((u) => u.status === "approved");
+  const disabled = users.filter((u) => u.status === "disabled");
+
+  if (!owner) return null;
+
+  async function run(uid: string, fn: () => Promise<void>) {
+    setActionError(null);
+    setBusyUid(uid);
+    try {
+      await fn();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setBusyUid(null);
+    }
+  }
+
+  function isLastOwner(u: UserWithId): boolean {
+    return u.role === "owner" && u.status === "approved" && approvedOwnerCount <= 1;
+  }
+
+  function onApprove(u: UserWithId) {
+    if (!firebaseUser) return;
+    void run(u.uid, () => approveUser(firebaseUser.uid, u.uid));
+  }
+
+  function onChangeRole(u: UserWithId, newRole: Role) {
+    if (!firebaseUser || newRole === u.role) return;
+    if (isLastOwner(u) && newRole !== "owner") {
+      setActionError("最後のオーナーは降格できません。先に別のオーナーを追加してください。");
+      return;
+    }
+    if (u.uid === firebaseUser.uid && newRole !== "owner") {
+      const ok = window.confirm(
+        "自分自身の権限をオーナーから変更すると、ユーザー管理画面にアクセスできなくなります。\n本当に変更しますか？"
+      );
+      if (!ok) return;
+    }
+    void run(u.uid, () => changeUserRole(firebaseUser.uid, u, newRole));
+  }
+
+  function onDisable(u: UserWithId) {
+    if (!firebaseUser) return;
+    if (isLastOwner(u)) {
+      setActionError("最後のオーナーは無効化できません。先に別のオーナーを追加してください。");
+      return;
+    }
+    if (u.uid === firebaseUser.uid) {
+      const ok = window.confirm(
+        "自分自身を無効化すると、即座にアプリへアクセスできなくなります。\n本当に無効化しますか？"
+      );
+      if (!ok) return;
+    } else {
+      const ok = window.confirm(`${u.displayName}（${u.email}）を無効化しますか？`);
+      if (!ok) return;
+    }
+    void run(u.uid, () => disableUser(firebaseUser.uid, u));
+  }
+
+  function onEnable(u: UserWithId) {
+    if (!firebaseUser) return;
+    void run(u.uid, () => enableUser(firebaseUser.uid, u.uid));
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <span className="title">CAST MANAGER</span>
+        <Link href="/dashboard" className="btn btn-ghost btn-sm">
+          ← ダッシュボード
+        </Link>
+      </header>
+
+      <main className="app-main">
+        <h1 className="page-title">ユーザー管理</h1>
+        <p className="page-sub">
+          利用申請の承認・権限の変更・アカウントの無効化を行います（オーナー専用）
+        </p>
+
+        {loadError && <div className="error-box">読み込みエラー: {loadError}</div>}
+        {actionError && <div className="error-box">{actionError}</div>}
+
+        <div className="section-label">承認待ち（{pending.length}）</div>
+        {pending.length === 0 && (
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>承認待ちのユーザーはいません</p>
+        )}
+        {pending.map((u) => (
+          <UserCard key={u.uid} user={u} meUid={firebaseUser?.uid ?? ""} lastOwner={false}>
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={busyUid === u.uid}
+              onClick={() => onApprove(u)}
+            >
+              承認する
+            </button>
+            <button
+              className="btn btn-danger btn-sm"
+              disabled={busyUid === u.uid}
+              onClick={() => onDisable(u)}
+            >
+              却下（無効化）
+            </button>
+          </UserCard>
+        ))}
+
+        <div className="section-label">利用中（{approved.length}）</div>
+        {approved.map((u) => (
+          <UserCard
+            key={u.uid}
+            user={u}
+            meUid={firebaseUser?.uid ?? ""}
+            lastOwner={isLastOwner(u)}
+          >
+            <label style={{ fontSize: 12, color: "var(--text3)" }}>
+              権限:{" "}
+              <select
+                className="form-input"
+                style={{ width: "auto", display: "inline-block", padding: "4px 8px" }}
+                value={u.role}
+                disabled={busyUid === u.uid || isLastOwner(u)}
+                onChange={(e) => onChangeRole(u, e.target.value as Role)}
+              >
+                {ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_LABELS[r]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="btn btn-danger btn-sm"
+              disabled={busyUid === u.uid || isLastOwner(u)}
+              title={isLastOwner(u) ? "最後のオーナーは無効化できません" : ""}
+              onClick={() => onDisable(u)}
+            >
+              無効化
+            </button>
+            {isLastOwner(u) && (
+              <span style={{ fontSize: 11, color: "var(--yellow)" }}>
+                最後のオーナーのため変更できません
+              </span>
+            )}
+          </UserCard>
+        ))}
+
+        <div className="section-label">無効（{disabled.length}）</div>
+        {disabled.length === 0 && (
+          <p style={{ color: "var(--text3)", fontSize: 12 }}>無効化されたユーザーはいません</p>
+        )}
+        {disabled.map((u) => (
+          <UserCard key={u.uid} user={u} meUid={firebaseUser?.uid ?? ""} lastOwner={false}>
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={busyUid === u.uid}
+              onClick={() => onEnable(u)}
+            >
+              再有効化（承認済みに戻す）
+            </button>
+          </UserCard>
+        ))}
+      </main>
+    </div>
+  );
+}
+
+function UserCard({
+  user,
+  meUid,
+  lastOwner,
+  children,
+}: {
+  user: UserWithId;
+  meUid: string;
+  lastOwner: boolean;
+  children: React.ReactNode;
+}) {
+  const statusBadge =
+    user.status === "approved"
+      ? "badge-green"
+      : user.status === "pending"
+        ? "badge-yellow"
+        : "badge-red";
+  return (
+    <div className="user-card">
+      <div className="row1">
+        <div>
+          <div className="name">
+            {user.displayName}
+            {user.uid === meUid && (
+              <span style={{ fontSize: 11, color: "var(--acc2)", marginLeft: 6 }}>
+                （自分）
+              </span>
+            )}
+          </div>
+          <div className="email">{user.email}</div>
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span className="badge badge-purple">{ROLE_LABELS[user.role]}</span>
+          <span className={`badge ${statusBadge}`}>{USER_STATUS_LABELS[user.status]}</span>
+          {lastOwner && <span className="badge badge-yellow">最後のオーナー</span>}
+        </div>
+      </div>
+      <div className="actions">{children}</div>
+    </div>
+  );
+}

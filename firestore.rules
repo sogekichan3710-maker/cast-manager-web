@@ -1,0 +1,250 @@
+rules_version = '2';
+
+// =====================================================================
+// CAST MANAGER WEB — Firestore Security Rules (PR1)
+//
+// 設計方針:
+// - 未承認(pending) / 無効(disabled) / usersドキュメント不在 のユーザーは
+//   業務データへ一切アクセスできない（読み取りも不可）。
+// - users の新規作成は「自分自身・role=viewer・status=pending」のみ。
+//   role / status / accessibleStoreIds をユーザー自身が引き上げることは
+//   不可能。
+// - role / status / accessibleStoreIds の変更は owner のみ。
+//   ただし自分自身の role / status は変更できない
+//   （自己昇格・自己無効化事故・最後のowner自己降格をRulesレベルで防ぐ）。
+// - 業務データは storeId によるアクセス制御。owner は全店舗。
+//   admin / viewer は accessibleStoreIds に含まれる店舗のみ。
+// - 書き込みは admin 以上。viewer は読み取り専用。
+// - auditLogs は追記のみ（更新・削除不可）。
+//
+// ⚠️ Rulesで表現できない保護（クライアント／将来のCloud Functionsで担保）:
+// - 「最後の承認済みownerの降格・無効化禁止」: Rulesはコレクションの
+//   集計ができないため、自己変更禁止 + サービス層のトランザクション
+//   チェックで多層防御している。厳密な保証はCloud Functions移行時に行う。
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- 共通ヘルパー ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function userDocExists() {
+      return isSignedIn() && exists(userPath(request.auth.uid));
+    }
+
+    function me() {
+      return get(userPath(request.auth.uid)).data;
+    }
+
+    function isApproved() {
+      return userDocExists() && me().status == 'approved';
+    }
+
+    function isOwner() {
+      return isApproved() && me().role == 'owner';
+    }
+
+    function isAdminOrAbove() {
+      return isApproved() && me().role in ['owner', 'admin'];
+    }
+
+    // 対象storeIdへのアクセス権（ownerは全店舗）
+    function canAccessStore(storeId) {
+      return isApproved()
+        && (me().role == 'owner' || storeId in me().accessibleStoreIds);
+    }
+
+    // ---------- users ----------
+    match /users/{uid} {
+
+      // 自分のドキュメントは読める。ownerは全ユーザーを読める。
+      allow get: if isSignedIn() && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+
+      // 新規作成: 本人のみ・viewer/pending固定・店舗アクセス空
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'viewer'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.accessibleStoreIds is list
+        && request.resource.data.accessibleStoreIds.size() == 0
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
+        && request.resource.data.approvedAt == null
+        && request.resource.data.approvedBy == null
+        && request.resource.data.disabledAt == null;
+
+      // 更新:
+      //  (a) owner が他ユーザーを更新（role/status/accessibleStoreIds等）。
+      //      自分自身の role / status / accessibleStoreIds は変更不可。
+      //      email / createdAt は不変。
+      //  (b) 本人が displayName / updatedAt のみ更新。
+      allow update: if
+        (
+          isOwner()
+          && request.auth.uid != uid
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.role in ['owner', 'admin', 'viewer']
+          && request.resource.data.status in ['pending', 'approved', 'disabled']
+        )
+        ||
+        (
+          isSignedIn()
+          && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['displayName', 'updatedAt'])
+        );
+
+      // 削除は不可（無効化=status:'disabled'で扱う）
+      allow delete: if false;
+    }
+
+    // ---------- 店舗マスター ----------
+    match /stores/{storeId} {
+      // 承認済みユーザーは店舗一覧を読める（店舗切替UIのため）
+      allow read: if isApproved();
+      // 店舗の作成・編集は owner のみ。createdBy/updatedBy の偽装を禁止。
+      allow create: if isOwner()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow update: if isOwner()
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false; // 非表示(active:false)で扱う
+    }
+
+    // ---------- 業務データ（店舗別アクセス制御・admin以上で書込） ----------
+    match /casts/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      // 作成: admin以上・許可店舗のみ・'__all__'禁止・createdBy/updatedByは本人
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.archived == false;
+      // 更新: storeId変更禁止（許可外店舗への移動を含む）・
+      //       createdBy/createdAt改竄禁止・updatedByは本人
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      // 完全削除はPR5でowner専用の安全な関連データ削除として実装予定。
+      // それまでは全面禁止（非表示はarchived:trueで扱う）。
+      allow delete: if false;
+    }
+
+    match /monthlyResults/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.castId == resource.data.castId
+        && request.resource.data.month == resource.data.month
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      // 月別成績の削除は既存ローカル版でも可能なため admin 以上に許可
+      allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
+    }
+
+    match /interviews/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.castId == resource.data.castId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
+    }
+
+    match /motivations/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.castId == resource.data.castId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
+    }
+
+    match /goals/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow update: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && request.resource.data.storeId == resource.data.storeId
+        && request.resource.data.castId == resource.data.castId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
+    }
+
+
+    match /wageHistory/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      // 時給履歴は追記のみ（改竄防止）
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__'
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /importBatches/{docId} {
+      allow read: if canAccessStore(resource.data.storeId);
+      allow create: if isAdminOrAbove()
+        && canAccessStore(request.resource.data.storeId)
+        && request.resource.data.storeId != '__all__';
+      allow update, delete: if false;
+    }
+
+    // ---------- 監査ログ（追記のみ） ----------
+    match /auditLogs/{docId} {
+      allow read: if isOwner();
+      allow create: if isApproved()
+        && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------- その他は全拒否 ----------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

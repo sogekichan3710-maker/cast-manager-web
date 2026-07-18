@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+rules-test/node_modules/
+
+# next.js
+.next/
+out/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# firebase
+.firebaserc
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+.firebase/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+tsconfig.tsbuildinfo
