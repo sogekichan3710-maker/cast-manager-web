@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
@@ -83,6 +84,21 @@ export function subscribeMonthlyResultsByCast(
     },
     (err) => onError(err.message)
   );
+}
+
+/** 指定店舗×指定月の成績を1回取得する（Excelインポートの既存データ確認用） */
+export async function fetchMonthlyResultsByStoreMonth(
+  storeId: string,
+  month: string
+): Promise<MonthlyResultWithId[]> {
+  const snap = await getDocs(
+    query(
+      collection(getDb(), COL),
+      where("storeId", "==", storeId),
+      where("month", "==", month)
+    )
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as MonthlyResultDoc) }));
 }
 
 /** 月別成績フォームの入力値（既存ローカル版 saveMr と同一フィールド） */
