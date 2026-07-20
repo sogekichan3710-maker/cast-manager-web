@@ -67,11 +67,12 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
     setSaving(true);
     const allowed = owner ? ("all" as const) : userDoc.accessibleStoreIds;
     try {
+      const actorName = userDoc.displayName ?? "";
       if (cast) {
-        await updateCast(firebaseUser.uid, cast.id, input, allowed, baseUpdatedAt);
+        await updateCast(firebaseUser.uid, actorName, cast.id, input, allowed, baseUpdatedAt);
         onSaved(cast.id);
       } else {
-        const id = await createCast(firebaseUser.uid, input, allowed);
+        const id = await createCast(firebaseUser.uid, actorName, input, allowed);
         onSaved(id);
       }
     } catch (err: unknown) {

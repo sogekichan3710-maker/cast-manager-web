@@ -15,6 +15,15 @@ export type CastStatus = (typeof CAST_STATUSES)[number];
 export const RANKS = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-"] as const;
 export type Rank = (typeof RANKS)[number];
 
+/**
+ * 店舗別の給与運用ルール（PR5で追加。設定のみで現在の計算・動作は変更しない）。
+ * - fixed: 固定時給制
+ * - slide: スライド（歩合）制
+ * 将来のExcelインポート／AI連携／会社入力機能で参照する想定。
+ */
+export const WAGE_POLICIES = ["fixed", "slide"] as const;
+export type WagePolicy = (typeof WAGE_POLICIES)[number];
+
 /** stores/{storeId} */
 export interface StoreDoc {
   name: string;
@@ -22,6 +31,8 @@ export interface StoreDoc {
   color: string;
   active: boolean;
   order: number;
+  /** 給与運用ルール（PR5で追加。未設定の既存店舗は 'fixed' 扱い） */
+  wagePolicy?: WagePolicy;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -45,9 +56,10 @@ export const INITIAL_STORES: ReadonlyArray<{
   code: string;
   color: string;
   order: number;
+  wagePolicy: WagePolicy;
 }> = [
-  { id: "virgo", name: "VIRGO", code: "virgo", color: "#9c27b0", order: 0 },
-  { id: "regina", name: "REGINA", code: "regina", color: "#e91e63", order: 1 },
+  { id: "virgo", name: "VIRGO", code: "virgo", color: "#9c27b0", order: 0, wagePolicy: "fixed" },
+  { id: "regina", name: "REGINA", code: "regina", color: "#e91e63", order: 1, wagePolicy: "slide" },
 ] as const;
 
 /** 「全店舗」表示用の特別値（Firestoreへは絶対に保存しない） */
@@ -110,6 +122,16 @@ export interface MonthlyResultDoc {
   absent: number;
   notes: string;
   batchId: string | null;
+  /**
+   * 毎日・飛び飛び運用対応（PR5）。
+   * Excelは「その時点までの月累計」を保持しているため、インポートは常に
+   * 値を上書きする（加算しない）。途中の日付が存在しなくても欠損として
+   * 扱わない。Excel更新と手動編集のどちらが最新かを判別するための記録。
+   */
+  lastImportAt?: Timestamp | null;
+  lastImportBatchId?: string | null;
+  lastManualEditAt?: Timestamp | null;
+  lastManualEditBy?: string | null;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -469,3 +491,37 @@ export interface AuditLogDoc {
   after: Record<string, unknown> | null;
   createdAt: Timestamp;
 }
+
+export interface AuditLogWithId extends AuditLogDoc {
+  id: string;
+}
+
+/**
+ * 監査対象アクション（PR5で網羅・一元管理）。
+ * 追加・変更時はこの一覧と auditLogService の呼び出し箇所を合わせて更新する。
+ */
+export const AUDIT_ACTIONS = [
+  "cast.create",
+  "cast.update",
+  "cast.archive",
+  "cast.restore",
+  "cast.deletePermanent",
+  "monthlyResult.create",
+  "monthlyResult.update",
+  "monthlyResult.delete",
+  "interview.create",
+  "interview.update",
+  "goal.upsert",
+  "motivation.create",
+  "wageHistory.add",
+  "import.execute",
+  "import.rollback",
+  "migration.execute",
+  "backup.export",
+  "user.approve",
+  "user.roleChange",
+  "user.disable",
+  "user.enable",
+  "user.accessibleStoresChange",
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];

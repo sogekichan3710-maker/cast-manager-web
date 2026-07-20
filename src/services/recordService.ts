@@ -12,6 +12,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { addAuditLogToBatch, addAuditLogToTransaction } from "@/services/auditLogService";
 import type {
   FollowNeed,
   GoalDoc,
@@ -178,7 +179,11 @@ export function emptyRecordInput(
  * - モチベーション: レベルが選択されていれば motivations へ追加
  * すべて1つの writeBatch でアトミックに保存する。
  */
-export async function saveRecord(actorUid: string, input: RecordInput): Promise<void> {
+export async function saveRecord(
+  actorUid: string,
+  actorName: string,
+  input: RecordInput
+): Promise<void> {
   if (!input.castId) throw new Error("キャストを選択してください");
   if (!input.date) throw new Error("面談日を入力してください");
   if (!input.storeId) throw new Error("店舗が不正です");
@@ -192,7 +197,7 @@ export async function saveRecord(actorUid: string, input: RecordInput): Promise<
 
   // ── 面談 ──
   const ivRef = doc(collection(db, "interviews"));
-  batch.set(ivRef, {
+  const ivData = {
     castId: input.castId,
     storeId: input.storeId,
     date: input.date,
@@ -205,9 +210,22 @@ export async function saveRecord(actorUid: string, input: RecordInput): Promise<
     worries: input.worries,
     decisions: input.decisions,
     nextTask: input.nextTask,
+  };
+  batch.set(ivRef, {
+    ...ivData,
     createdAt: serverTimestamp(),
     createdBy: actorUid,
     ...meta,
+  });
+  addAuditLogToBatch(batch, {
+    actorUid,
+    actorName,
+    action: "interview.create",
+    collection: "interviews",
+    documentId: ivRef.id,
+    storeId: input.storeId,
+    before: null,
+    after: ivData,
   });
 
   // ── 目標（値がある場合のみ・同月は上書き = 既存ローカル版と同じ） ──
@@ -246,19 +264,42 @@ export async function saveRecord(actorUid: string, input: RecordInput): Promise<
       ...meta,
     };
     if (!existing.empty) {
+      const before = existing.docs[0].data();
       batch.update(existing.docs[0].ref, goalData);
+      addAuditLogToBatch(batch, {
+        actorUid,
+        actorName,
+        action: "goal.upsert",
+        collection: "goals",
+        documentId: existing.docs[0].id,
+        storeId: input.storeId,
+        before,
+        after: goalData,
+      });
     } else {
-      batch.set(doc(collection(db, "goals")), {
+      const goalRef = doc(collection(db, "goals"));
+      batch.set(goalRef, {
         ...goalData,
         createdAt: serverTimestamp(),
         createdBy: actorUid,
+      });
+      addAuditLogToBatch(batch, {
+        actorUid,
+        actorName,
+        action: "goal.upsert",
+        collection: "goals",
+        documentId: goalRef.id,
+        storeId: input.storeId,
+        before: null,
+        after: goalData,
       });
     }
   }
 
   // ── モチベーション（レベル選択時のみ） ──
   if (input.motiLevel !== "") {
-    batch.set(doc(collection(db, "motivations")), {
+    const motiRef = doc(collection(db, "motivations"));
+    const motiData = {
       castId: input.castId,
       storeId: input.storeId,
       date: input.date,
@@ -269,9 +310,22 @@ export async function saveRecord(actorUid: string, input: RecordInput): Promise<
       danger: input.motiDanger,
       follow: input.motiFollow,
       growth: input.motiGrowth,
+    };
+    batch.set(motiRef, {
+      ...motiData,
       createdAt: serverTimestamp(),
       createdBy: actorUid,
       ...meta,
+    });
+    addAuditLogToBatch(batch, {
+      actorUid,
+      actorName,
+      action: "motivation.create",
+      collection: "motivations",
+      documentId: motiRef.id,
+      storeId: input.storeId,
+      before: null,
+      after: motiData,
     });
   }
 
@@ -308,6 +362,7 @@ export interface InterviewEditInput {
  */
 export async function updateInterview(
   actorUid: string,
+  actorName: string,
   interviewId: string,
   input: InterviewEditInput,
   expectedUpdatedAt: Timestamp | null
@@ -326,7 +381,7 @@ export async function updateInterview(
     ) {
       throw new InterviewConflictError();
     }
-    tx.update(ref, {
+    const data = {
       date: input.date,
       interviewer: input.interviewer.trim(),
       follow: input.follow,
@@ -335,8 +390,26 @@ export async function updateInterview(
       worries: input.worries,
       decisions: input.decisions,
       nextTask: input.nextTask,
-      updatedAt: serverTimestamp(),
-      updatedBy: actorUid,
+    };
+    tx.update(ref, { ...data, updatedAt: serverTimestamp(), updatedBy: actorUid });
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "interview.update",
+      collection: "interviews",
+      documentId: interviewId,
+      storeId: current.storeId,
+      before: {
+        date: current.date,
+        interviewer: current.interviewer,
+        follow: current.follow,
+        nextDate: current.nextDate,
+        content: current.content,
+        worries: current.worries,
+        decisions: current.decisions,
+        nextTask: current.nextTask,
+      },
+      after: data,
     });
   });
 }
@@ -344,6 +417,7 @@ export async function updateInterview(
 /** 時給変更を記録し、キャストの時給も更新する（追記のみのwageHistoryへ） */
 export async function recordWageChange(
   actorUid: string,
+  actorName: string,
   params: {
     castId: string;
     storeId: string;
@@ -355,20 +429,30 @@ export async function recordWageChange(
 ): Promise<void> {
   const db = getDb();
   const batch = writeBatch(db);
-  batch.set(doc(collection(db, "wageHistory")), {
+  const whRef = doc(collection(db, "wageHistory"));
+  const whData = {
     castId: params.castId,
     storeId: params.storeId,
     oldHourlyWage: Math.round(params.oldHourlyWage),
     newHourlyWage: Math.round(params.newHourlyWage),
     effectiveMonth: params.effectiveMonth,
     reason: params.reason.trim(),
-    createdAt: serverTimestamp(),
-    createdBy: actorUid,
-  });
+  };
+  batch.set(whRef, { ...whData, createdAt: serverTimestamp(), createdBy: actorUid });
   batch.update(doc(db, "casts", params.castId), {
     hourlyWage: Math.round(params.newHourlyWage),
     updatedAt: serverTimestamp(),
     updatedBy: actorUid,
+  });
+  addAuditLogToBatch(batch, {
+    actorUid,
+    actorName,
+    action: "wageHistory.add",
+    collection: "wageHistory",
+    documentId: whRef.id,
+    storeId: params.storeId,
+    before: null,
+    after: whData,
   });
   await batch.commit();
 }

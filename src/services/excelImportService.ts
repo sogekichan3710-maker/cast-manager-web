@@ -17,6 +17,7 @@ import type { RowAction } from "@/lib/excel/importMatching";
 import { buildRuleFromDecision } from "@/lib/excel/importMatching";
 import { createImportBatch, completeImportBatch } from "./importBatchService";
 import { upsertNameMatchingRule } from "./nameMatchingRuleService";
+import { writeAuditLog } from "./auditLogService";
 
 /**
  * Excelインポートの実行サービス。
@@ -126,6 +127,12 @@ function mrBusinessFields(cur: MonthlyResultDoc): Record<string, unknown> {
   };
 }
 
+/**
+ * Excel行から月別成績の保存データを作る。
+ * 毎日・飛び飛び運用対応: Excelは「その時点までの月累計」を保持しているため、
+ * 常に値を「更新」する（加算しない・欠損扱いしない）。lastImportAt /
+ * lastImportBatchId を必ず更新し、Excel更新か手動編集かを判別できるようにする。
+ */
 function mrDataFromRow(
   storeId: string,
   castId: string,
@@ -150,6 +157,8 @@ function mrDataFromRow(
     absent: row.absent,
     notes: row.notes,
     batchId,
+    lastImportAt: serverTimestamp(),
+    lastImportBatchId: batchId,
     updatedAt: serverTimestamp(),
     updatedBy: actorUid,
   };
@@ -157,6 +166,7 @@ function mrDataFromRow(
 
 export async function executeExcelImport(
   actorUid: string,
+  actorName: string,
   params: {
     storeId: string;
     targetMonth: string; // YYYY-MM
@@ -442,6 +452,29 @@ export async function executeExcelImport(
     );
   } catch (err) {
     errorMessages.push(`インポート履歴の更新に失敗: ${(err as Error).message}`);
+  }
+
+  try {
+    await writeAuditLog({
+      actorUid,
+      actorName,
+      action: "import.execute",
+      collection: "importBatches",
+      documentId: batchId,
+      storeId,
+      before: null,
+      after: {
+        fileName: params.fileName,
+        targetMonth,
+        status,
+        createdCount: created,
+        updatedCount: updated,
+        skippedCount: skipped,
+        errorCount: errorMessages.length,
+      },
+    });
+  } catch {
+    // 監査ログの書き込み失敗はインポート結果自体には影響させない
   }
 
   report();

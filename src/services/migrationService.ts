@@ -14,6 +14,7 @@ import {
   type WriteBatch,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { writeAuditLog } from "@/services/auditLogService";
 import type { MigrationRunWithId, MigrationRunDoc, RunStatus } from "@/types";
 import type { ConversionResult } from "@/lib/migration/convertLegacyData";
 
@@ -132,6 +133,7 @@ async function fetchExistingIds(tasksByCol: Map<string, WriteTask[]>): Promise<S
  */
 export async function executeMigration(
   actorUid: string,
+  actorName: string,
   fileName: string,
   conversion: ConversionResult,
   onProgress: (p: MigrationProgress) => void,
@@ -228,6 +230,21 @@ export async function executeMigration(
   } catch (err) {
     // 実行記録の更新失敗は移行結果自体には影響しない（画面に表示のみ）
     errorMessages.push(`実行記録の更新に失敗: ${(err as Error).message}`);
+  }
+
+  try {
+    await writeAuditLog({
+      actorUid,
+      actorName,
+      action: "migration.execute",
+      collection: "migrationRuns",
+      documentId: migrationId,
+      storeId: null,
+      before: null,
+      after: { fileName, status, created, skipped, errors: errorMessages.length },
+    });
+  } catch {
+    // 監査ログの書き込み失敗は移行結果自体には影響させない
   }
 
   report(status === "completed" ? "完了" : status === "cancelled" ? "中断しました" : "エラーで停止しました");

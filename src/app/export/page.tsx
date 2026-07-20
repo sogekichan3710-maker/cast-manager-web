@@ -86,7 +86,7 @@ export default function ExportPage() {
     setBackupError(null);
     setBackupMsg(null);
     try {
-      const backup = await exportBackupJson(firebaseUser.uid, (name) =>
+      const backup = await exportBackupJson(firebaseUser.uid, userDoc?.displayName ?? "", (name) =>
         setBackupMsg(`${name} を取得中…`)
       );
       downloadJson(backup, timestampedFileName("cast-manager_backup", "json"));

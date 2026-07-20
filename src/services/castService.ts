@@ -10,6 +10,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { addAuditLogToTransaction } from "@/services/auditLogService";
 import {
   ALL_STORES_FILTER,
   CAST_STATUSES,
@@ -232,20 +233,32 @@ function normalizeInput(input: CastInput) {
 /** キャストを新規作成する（owner/admin・Rulesでも制限） */
 export async function createCast(
   actorUid: string,
+  actorName: string,
   input: CastInput,
   allowedStoreIds: string[] | "all"
 ): Promise<string> {
   const err = validateCastInput(input, allowedStoreIds);
   if (err) throw new Error(err);
   const ref = doc(collection(getDb(), CASTS));
+  const data = normalizeInput(input);
   await runTransaction(getDb(), async (tx) => {
     tx.set(ref, {
-      ...normalizeInput(input),
+      ...data,
       archived: false,
       createdAt: serverTimestamp(),
       createdBy: actorUid,
       updatedAt: serverTimestamp(),
       updatedBy: actorUid,
+    });
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "cast.create",
+      collection: CASTS,
+      documentId: ref.id,
+      storeId: data.storeId,
+      before: null,
+      after: data,
     });
   });
   return ref.id;
@@ -259,6 +272,7 @@ export async function createCast(
  */
 export async function updateCast(
   actorUid: string,
+  actorName: string,
   castId: string,
   input: CastInput,
   allowedStoreIds: string[] | "all",
@@ -288,21 +302,66 @@ export async function updateCast(
       updatedAt: serverTimestamp(),
       updatedBy: actorUid,
     });
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "cast.update",
+      collection: CASTS,
+      documentId: castId,
+      storeId: data.storeId,
+      before: castBusinessFields(current),
+      after: data,
+    });
   });
 }
 
+/** 監査ログの before 用に業務フィールドのみ抽出（メタ情報は含めない） */
+function castBusinessFields(c: CastDoc): Record<string, unknown> {
+  return {
+    storeId: c.storeId,
+    stageName: c.stageName,
+    realName: c.realName,
+    kana: c.kana,
+    hourlyWage: c.hourlyWage,
+    rank: c.rank,
+    status: c.status,
+    joinDate: c.joinDate,
+    leftDate: c.leftDate,
+    birthday: c.birthday,
+    phone: c.phone,
+    line: c.line,
+    manager: c.manager,
+    targetSales: c.targetSales,
+    targetHonmei: c.targetHonmei,
+    targetDouhan: c.targetDouhan,
+    guarantee: c.guarantee,
+    personality: c.personality,
+    memo: c.memo,
+    customerNotes: c.customerNotes,
+  };
+}
+
 /** アーカイブする（退店とは別概念） */
-export async function archiveCast(actorUid: string, castId: string): Promise<void> {
-  await setArchived(actorUid, castId, true);
+export async function archiveCast(
+  actorUid: string,
+  actorName: string,
+  castId: string
+): Promise<void> {
+  await setArchived(actorUid, actorName, castId, true);
 }
 
 /** アーカイブから復元する */
-export async function restoreCast(actorUid: string, castId: string): Promise<void> {
-  await setArchived(actorUid, castId, false);
+export async function restoreCast(
+  actorUid: string,
+  actorName: string,
+  castId: string
+): Promise<void> {
+  await setArchived(actorUid, actorName, castId, false);
 }
 
 async function setArchived(
   actorUid: string,
+  actorName: string,
   castId: string,
   archived: boolean
 ): Promise<void> {
@@ -311,10 +370,21 @@ async function setArchived(
     const ref = doc(db, CASTS, castId);
     const snap = await tx.get(ref);
     if (!snap.exists()) throw new Error("キャストが見つかりません");
+    const current = snap.data() as CastDoc;
     tx.update(ref, {
       archived,
       updatedAt: serverTimestamp(),
       updatedBy: actorUid,
+    });
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: archived ? "cast.archive" : "cast.restore",
+      collection: CASTS,
+      documentId: castId,
+      storeId: current.storeId,
+      before: { archived: current.archived },
+      after: { archived },
     });
   });
 }

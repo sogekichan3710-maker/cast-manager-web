@@ -9,6 +9,7 @@ import {
   where,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { writeAuditLog } from "@/services/auditLogService";
 import type { BatchChange, ImportBatchWithId, RollbackStatus } from "@/types";
 
 /**
@@ -123,6 +124,7 @@ function restoreData(
 
 export async function rollbackImportBatch(
   actorUid: string,
+  actorName: string,
   batch: ImportBatchWithId,
   onProgress: (p: RollbackProgress) => void,
   shouldCancel: () => boolean
@@ -304,6 +306,21 @@ export async function rollbackImportBatch(
     });
   } catch (err) {
     errorMessages.push(`ロールバック結果の記録に失敗: ${(err as Error).message}`);
+  }
+
+  try {
+    await writeAuditLog({
+      actorUid,
+      actorName,
+      action: "import.rollback",
+      collection: "importBatches",
+      documentId: batch.id,
+      storeId: batch.storeId,
+      before: { changesCount: changes.length },
+      after: { rollbackStatus: status, reverted, skippedCount: skipped.length },
+    });
+  } catch {
+    // 監査ログの書き込み失敗はロールバック結果自体には影響させない
   }
 
   report();

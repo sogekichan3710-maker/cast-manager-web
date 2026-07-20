@@ -1,5 +1,6 @@
 import { Timestamp, collection, getDocs } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { writeAuditLog } from "@/services/auditLogService";
 
 /**
  * JSONバックアップ（owner専用・Rulesでも実質owner以外は全件取得不可）。
@@ -46,6 +47,7 @@ function serializeValue(v: unknown): unknown {
 
 export async function exportBackupJson(
   actorUid: string,
+  actorName: string,
   onProgress?: (collectionName: string, done: number, total: number) => void
 ): Promise<BackupJson> {
   const db = getDb();
@@ -63,6 +65,20 @@ export async function exportBackupJson(
     done++;
   }
   onProgress?.("完了", done, BACKUP_COLLECTIONS.length);
+  try {
+    await writeAuditLog({
+      actorUid,
+      actorName,
+      action: "backup.export",
+      collection: "backup",
+      documentId: `backup-${Date.now()}`,
+      storeId: null,
+      before: null,
+      after: counts,
+    });
+  } catch {
+    // 監査ログの書き込み失敗はバックアップ結果自体には影響させない
+  }
   return {
     formatVersion: BACKUP_FORMAT_VERSION,
     exportedAt: new Date().toISOString(),

@@ -80,8 +80,9 @@ export default function CastsPage() {
     setActionError(null);
     setBusyId(c.id);
     try {
-      if (c.archived) await restoreCast(firebaseUser.uid, c.id);
-      else await archiveCast(firebaseUser.uid, c.id);
+      const actorName = userDoc?.displayName ?? "";
+      if (c.archived) await restoreCast(firebaseUser.uid, actorName, c.id);
+      else await archiveCast(firebaseUser.uid, actorName, c.id);
     } catch (err) {
       setActionError((err as Error).message);
     } finally {

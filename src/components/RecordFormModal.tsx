@@ -24,7 +24,7 @@ export function RecordFormModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { firebaseUser } = useAuth();
+  const { firebaseUser, userDoc } = useAuth();
   const [input, setInput] = useState<RecordInput>(() =>
     emptyRecordInput(cast.id, cast.storeId, currentMonth())
   );
@@ -49,7 +49,7 @@ export function RecordFormModal({
     setError(null);
     setSaving(true);
     try {
-      await saveRecord(firebaseUser.uid, input);
+      await saveRecord(firebaseUser.uid, userDoc?.displayName ?? "", input);
       onSaved();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "保存に失敗しました");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { InterviewEditModal } from "@/components/InterviewEditModal";
 import { MonthlyResultFormModal } from "@/components/MonthlyResultFormModal";
@@ -15,9 +16,15 @@ import {
   subscribeWageHistory,
 } from "@/services/recordService";
 import {
+  deleteCastPermanently,
+  previewCastDeletion,
+  type CastDeletionPreview,
+} from "@/services/castDeleteService";
+import {
   currentMonth,
   fmtDiff,
   isAdminOrAbove,
+  isOwner,
   monthToJa,
   payDiff,
   realHourlyWage,
@@ -39,6 +46,8 @@ import {
 export function CastDetailSections({ cast }: { cast: CastWithId }) {
   const { firebaseUser, userDoc } = useAuth();
   const canEdit = isAdminOrAbove(userDoc);
+  const owner = isOwner(userDoc);
+  const router = useRouter();
 
   const [results, setResults] = useState<MonthlyResultWithId[]>([]);
   const [interviews, setInterviews] = useState<InterviewWithId[]>([]);
@@ -46,6 +55,7 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
   const [motivations, setMotivations] = useState<MotivationWithId[]>([]);
   const [wageHistory, setWageHistory] = useState<WageHistoryWithId[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
 
   useEffect(() => {
     const onErr = (m: string) => setError(m);
@@ -105,6 +115,15 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
             <button className="btn btn-ghost btn-sm" onClick={() => setWageFormOpen(true)}>
               ¥ 時給を変更
             </button>
+            {owner && (
+              <button
+                className="btn btn-danger btn-sm"
+                style={{ marginLeft: "auto" }}
+                onClick={() => setDeleteModalOpen(true)}
+              >
+                完全削除（オーナー専用）
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -360,10 +379,132 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
         <WageChangeModal
           cast={cast}
           actorUid={firebaseUser.uid}
+          actorName={userDoc?.displayName ?? ""}
           onClose={() => setWageFormOpen(false)}
         />
       )}
+      {deleteModalOpen && firebaseUser && (
+        <CastDeleteModal
+          cast={cast}
+          actorUid={firebaseUser.uid}
+          actorName={userDoc?.displayName ?? ""}
+          onClose={() => setDeleteModalOpen(false)}
+          onDeleted={() => router.push("/casts")}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * キャスト完全削除モーダル（オーナー専用）。
+ * 削除前に関連データ件数（月別成績・面談・目標・モチベーション・
+ * 時給履歴・nameMatchingRules）を必ず表示し、確認後にのみ削除する。
+ */
+function CastDeleteModal({
+  cast,
+  actorUid,
+  actorName,
+  onClose,
+  onDeleted,
+}: {
+  cast: CastWithId;
+  actorUid: string;
+  actorName: string;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [preview, setPreview] = useState<CastDeletionPreview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    previewCastDeletion(cast.id)
+      .then(setPreview)
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLoading(false));
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [cast.id]);
+
+  async function onConfirmDelete() {
+    if (deleting || confirmText !== cast.stageName) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteCastPermanently(actorUid, actorName, cast.id);
+      onDeleted();
+    } catch (err) {
+      setError((err as Error).message);
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="modal-card" style={{ maxWidth: 480 }}>
+        <div className="modal-head">
+          <h2>「{cast.stageName}」を完全削除</h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={deleting}>
+            ✕ 閉じる
+          </button>
+        </div>
+        <div className="error-box" style={{ marginBottom: 12 }}>
+          この操作は取り消せません。キャスト本体と、以下の関連データがすべて削除されます。
+        </div>
+        {error && <div className="error-box">{error}</div>}
+        {loading ? (
+          <div className="loading-block" style={{ padding: 20 }}>
+            <div className="spinner" aria-hidden />
+            <p>関連データを集計しています…</p>
+          </div>
+        ) : preview ? (
+          <div className="table-wrap">
+            <table className="data-table">
+              <tbody>
+                <tr><td>月別成績</td><td className="num">{preview.monthlyResults}件</td></tr>
+                <tr><td>面談</td><td className="num">{preview.interviews}件</td></tr>
+                <tr><td>目標</td><td className="num">{preview.goals}件</td></tr>
+                <tr><td>モチベーション</td><td className="num">{preview.motivations}件</td></tr>
+                <tr><td>時給履歴</td><td className="num">{preview.wageHistory}件</td></tr>
+                <tr><td>nameMatchingRules（無効化）</td><td className="num">{preview.nameMatchingRules}件</td></tr>
+                <tr><td>importBatch参照</td><td className="num">{preview.importBatchRefs}件</td></tr>
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        {preview && !loading && (
+          <div className="form-group" style={{ marginTop: 12 }}>
+            <label>
+              削除するには源氏名「{cast.stageName}」を入力してください
+            </label>
+            <input
+              className="form-input"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              disabled={deleting}
+            />
+          </div>
+        )}
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose} disabled={deleting}>
+            キャンセル
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={() => void onConfirmDelete()}
+            disabled={deleting || !preview || confirmText !== cast.stageName}
+          >
+            {deleting ? "削除中…" : "完全に削除する"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -380,10 +521,12 @@ function StatCard({ label, value }: { label: string; value: string }) {
 function WageChangeModal({
   cast,
   actorUid,
+  actorName,
   onClose,
 }: {
   cast: CastWithId;
   actorUid: string;
+  actorName: string;
   onClose: () => void;
 }) {
   const [newWage, setNewWage] = useState<number>(cast.hourlyWage || 0);
@@ -414,7 +557,7 @@ function WageChangeModal({
     setError(null);
     setSaving(true);
     try {
-      await recordWageChange(actorUid, {
+      await recordWageChange(actorUid, actorName, {
         castId: cast.id,
         storeId: cast.storeId,
         oldHourlyWage: cast.hourlyWage || 0,

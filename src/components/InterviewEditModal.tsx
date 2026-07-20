@@ -25,7 +25,7 @@ export function InterviewEditModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { firebaseUser } = useAuth();
+  const { firebaseUser, userDoc } = useAuth();
   const [input, setInput] = useState<InterviewEditInput>({
     date: interview.date ?? "",
     interviewer: interview.interviewer ?? "",
@@ -59,7 +59,13 @@ export function InterviewEditModal({
     setError(null);
     setSaving(true);
     try {
-      await updateInterview(firebaseUser.uid, interview.id, input, baseUpdatedAt);
+      await updateInterview(
+        firebaseUser.uid,
+        userDoc?.displayName ?? "",
+        interview.id,
+        input,
+        baseUpdatedAt
+      );
       onSaved();
     } catch (err: unknown) {
       if (err instanceof InterviewConflictError) {

@@ -128,9 +128,10 @@ export default function MonthlyPage() {
       )
     )
       return;
+    if (!firebaseUser) return;
     setActionError(null);
     try {
-      await deleteMonthlyResult(r.id);
+      await deleteMonthlyResult(firebaseUser.uid, userDoc?.displayName ?? "", r.id);
     } catch (err) {
       setActionError((err as Error).message);
     }

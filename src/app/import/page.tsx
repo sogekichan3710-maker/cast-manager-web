@@ -24,6 +24,7 @@ import {
   type AnalyzeProgress,
 } from "@/lib/excel/analyzeExcel";
 import type { MatchResult, RowAction, MatchableCast } from "@/lib/excel/importMatching";
+import { diffMonthlyResultFields, fmtDiffValue } from "@/lib/monthlyResultDiff";
 import {
   BULK_NEW_WARN_COUNT,
   ROW_FILTERS,
@@ -334,6 +335,7 @@ export default function ImportPage() {
       });
       const res = await executeExcelImport(
         firebaseUser.uid,
+        userDoc?.displayName ?? "",
         { storeId, targetMonth: month, fileName, decisions, statusDecisions },
         setProgress,
         () => cancelRef.current
@@ -1105,27 +1107,42 @@ function RowCard({
               差分を確認して判断
             </button>
           </div>
-          {rs.showDiff && (
-            <div className="table-wrap" style={{ marginTop: 8 }}>
-              <table className="data-table">
-                <thead>
-                  <tr><th>項目</th><th className="num">既存</th><th className="num">Excel</th></tr>
-                </thead>
-                <tbody>
-                  <DiffRow label="総売上" a={existing.totalSales} b={row.totalSales} yen />
-                  <DiffRow label="支給額" a={existing.payment} b={row.payment} yen />
-                  <DiffRow label="本指名" a={existing.honshimeiCount} b={row.honshimeiCount} />
-                  <DiffRow label="本指名組数" a={existing.honshimeiGroupCount} b={row.honshimeiGroupCount} />
-                  <DiffRow label="顧客数" a={existing.customerCount} b={row.customerCount} />
-                  <DiffRow label="場内" a={existing.jounaiCount} b={row.jounaiCount} />
-                  <DiffRow label="同伴" a={existing.douhan} b={row.douhan} />
-                  <DiffRow label="出勤日数" a={existing.workDays} b={row.workDays} />
-                  <DiffRow label="出勤時間" a={existing.workHours} b={row.workHours} />
-                  <DiffRow label="欠勤" a={existing.absent} b={row.absent} />
-                </tbody>
-              </table>
-            </div>
-          )}
+          {rs.showDiff && (() => {
+            const diffs = diffMonthlyResultFields(existing, row);
+            const lastSrc = existing.lastImportAt && existing.lastManualEditAt
+              ? (existing.lastImportAt.toMillis() >= existing.lastManualEditAt.toMillis() ? "Excel" : "手動編集")
+              : existing.lastImportAt ? "Excel" : existing.lastManualEditAt ? "手動編集" : "不明";
+            return (
+              <div style={{ marginTop: 8 }}>
+                <p className="page-sub" style={{ marginBottom: 6 }}>
+                  既存データの最終更新元: {lastSrc}
+                </p>
+                {diffs.length === 0 ? (
+                  <p className="empty-note">変更される項目はありません（既存データとExcelの値が一致しています）</p>
+                ) : (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr><th>項目</th><th className="num">更新前</th><th></th><th className="num">更新後</th></tr>
+                      </thead>
+                      <tbody>
+                        {diffs.map((d) => (
+                          <tr key={d.key}>
+                            <td>{d.label}</td>
+                            <td className="num">{fmtDiffValue(d.before, d.yen)}</td>
+                            <td className="num">↓</td>
+                            <td className="num" style={{ color: "var(--acc2)", fontWeight: 700 }}>
+                              {fmtDiffValue(d.after, d.yen)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1141,19 +1158,5 @@ function RowCard({
         </label>
       )}
     </div>
-  );
-}
-
-function DiffRow({ label, a, b, yen }: { label: string; a: number; b: number; yen?: boolean }) {
-  const fmt = (v: number) => (yen ? `¥${v.toLocaleString()}` : String(v));
-  const changed = a !== b;
-  return (
-    <tr>
-      <td>{label}</td>
-      <td className="num">{fmt(a)}</td>
-      <td className="num" style={changed ? { color: "var(--acc2)", fontWeight: 700 } : undefined}>
-        {fmt(b)}
-      </td>
-    </tr>
   );
 }
