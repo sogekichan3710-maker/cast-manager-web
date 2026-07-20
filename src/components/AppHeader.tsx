@@ -23,6 +23,7 @@ export function AppHeader() {
     ...(owner ? [{ href: "/admin/migration", label: "データ移行" }] : []),
     ...(owner ? [{ href: "/stores", label: "店舗管理" }] : []),
     ...(owner ? [{ href: "/admin/users", label: "ユーザー管理" }] : []),
+    ...(owner ? [{ href: "/admin/audit", label: "監査ログ" }] : []),
   ];
 
   return (
