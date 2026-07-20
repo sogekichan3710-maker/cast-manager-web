@@ -13,11 +13,11 @@
     "deploy": "firebase deploy --only functions"
   },
   "dependencies": {
-    "firebase-admin": "^12.3.1",
-    "firebase-functions": "^5.0.1"
+    "firebase-admin": "12.7.0",
+    "firebase-functions": "5.1.1"
   },
   "devDependencies": {
-    "typescript": "^5.5.3",
-    "vitest": "^1.6.0"
+    "typescript": "5.9.3",
+    "vitest": "1.6.1"
   }
 }
