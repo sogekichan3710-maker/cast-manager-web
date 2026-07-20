@@ -10,8 +10,9 @@
 - PR3: 月別成績・推移グラフ8種・面談・目標・モチベーション・時給履歴
 - PR3.5: ダッシュボード集計・ランキング7カテゴリ・検索対象修正・自動計算表示・面談編集
 - PR4: 旧ローカルデータ移行・Excelインポート/エクスポート・JSONバックアップ・
-  nameMatchingRules・インポート履歴・関連Security Rules（このPR）
-- PR5以降（未実装）: 完全削除・auditLogs本格実装・Cloud Functions化
+  nameMatchingRules・インポート履歴・関連Security Rules
+- PR5: auditLogs本格運用・キャスト完全削除・ユーザー管理のCloud Functions化・
+  毎日/飛び飛びExcel運用対応・店舗別給与運用ルール（このPR）
 
 **PR4で追加された機能:**
 - `/admin/migration` 旧ローカルデータ移行ウィザード（owner専用）
@@ -83,6 +84,55 @@
 - インポート履歴はviewerもRules上は閲覧可（既存の店舗別読み取り設計と整合）
   だが、画面・メニューは非表示
 
+**PR5で追加された機能:**
+- **auditLogs本格運用** — `src/services/auditLogService.ts` に一元化。
+  キャスト登録/編集/アーカイブ/復元/完全削除、月別成績登録/編集/削除、
+  面談登録/編集、目標登録/更新、モチベーション登録、時給変更、
+  Excelインポート実行/ロールバック、旧データ移行実行、JSONバックアップ、
+  ユーザー承認/権限変更/無効化/再有効化/accessibleStoreIds変更まで、
+  すべて「誰が・いつ・何を・どの店舗で・変更前・変更後」を記録する。
+  業務データの変更は同一トランザクション/バッチでログを書き込み、
+  変更とログの原子性を保つ（ログだけ欠落することがない）
+- **owner専用キャスト完全削除** — プレビュー（`src/services/castDeleteService.ts`
+  の `previewCastDeletion`）は月別成績/面談/目標/モチベーション/
+  時給履歴/nameMatchingRules（リンク解除件数）/importBatch参照の件数を
+  読み取り専用で集計してクライアントに表示し、源氏名の入力確認後にのみ
+  削除を実行する。実際の削除は `functions/src/index.ts` の
+  `deleteCastPermanently`（owner専用Callable Function・レビュー対応で
+  Cloud Functions化）が担当し、関連コレクションを先に全削除してから
+  キャスト本体を削除して孤立データを残さない（大量データは400件単位で
+  バッチ分割）。Firestore Rulesは逆に**owner含め全クライアントSDKから
+  `casts` / `wageHistory` の任意削除を禁止**し、削除はCloud Functions
+  経由のみに限定した（admin以下は従来どおりimportBatchId付き/
+  source:excel-importのExcelロールバック削除のみ）
+- **ユーザー管理のCloud Functions化** — 上記「権限変更処理は
+  Cloud Functionsへ移行済み」の節を参照
+- **毎日/飛び飛びExcel運用対応** — 会社Excelは「その時点までの月累計」を
+  保持しているため、インポートは常に**上書き更新**（加算しない）。
+  月別成績のドキュメントIDが`{storeId}_{castId}_{YYYY-MM}`で決定的なため、
+  7/10→7/13（欠落）→7/18のように飛び飛びで再インポートしても、
+  常に最新の累計値へ正しく更新される（欠損として扱わない）。
+  月末締め後に売上・支給額等が修正された場合も、最終Excelを再インポート
+  するだけでFirestoreが最終状態になる
+- **月別成績の更新元判別** — `monthlyResults` へ `lastImportAt` /
+  `lastImportBatchId`（Excel由来）と `lastManualEditAt` / `lastManualEditBy`
+  （手動フォーム由来）を追加し、どちらが最新の更新かを判別できるようにした
+- **差分表示（変更項目のみ）** — `src/lib/monthlyResultDiff.ts`。
+  同一月への再インポート時、既存データとExcelを比較し**値が変わった
+  項目だけ**を「更新前→更新後」形式で表示する（旧仕様の全項目表示から変更）
+- **店舗別運用ルール（設定のみ）** — `stores.wagePolicy`
+  （`'fixed'` 固定時給制 / `'slide'` スライド制）を追加。
+  初期値はVIRGO=fixed・REGINA=slide。**現在の計算・動作は一切変更しない**
+  設定項目のみで、将来のExcelインポート/AI連携/会社入力機能で参照する想定
+- **将来構想を考慮した設計の確認** — ダッシュボード/ランキング/月別成績/
+  キャスト詳細は `monthlyResultService` の型（`MonthlyResultWithId`）と
+  購読関数のみに依存し、Excel関連コード（`src/lib/excel/`）への参照が
+  一切ないことを確認済み。入力元がExcel→Web入力へ変わっても、集計・
+  ランキング・ダッシュボード・将来のAI分析・エクスポート側の変更は不要な構造
+- Excel出力処理は `src/lib/excel/exportExcel.ts`（ワークブック生成）と
+  `src/services/exportService.ts`（Firestore取得）に分離済み（PR4から継続）。
+  会社提出用フォーマットへの変更が必要になった場合もこの2ファイルの変更で完結する
+
 **PR3.5で追加された機能（既存ローカル版の仕様を移植）:**
 - `/dashboard` 全面実装 — 在籍人数/今月売上(前月比)/平均時給(月・年)/平均実質時給/総支給額/年間累計、平均時給の直近12ヶ月推移グラフ、面談アラート(30日以上or未面談・優先度ソート)、フォロー必要度「高」、次回面談予定(7日以内)、目標達成状況、今月・来月の誕生日
   （本指名/顧客数/場内/同伴/出勤/給与差額・時給差額の合計カードはPR4で表示整理 —
@@ -119,7 +169,7 @@
 **PR2の運用メモ:**
 - 「全店舗」は画面上の表示条件のみ。Firestoreへ `storeId: "__all__"` が保存されることはありません（Rulesでも拒否）
 - キャスト編集は競合検知付き（他ユーザーが先に更新していた場合は上書きせず再編集を促す）
-- キャストの完全削除は全ユーザー禁止（PR5でowner専用機能として実装予定）。非表示は「アーカイブ」を使用
+- キャストの完全削除はowner専用（PR5で実装。関連データも含めて削除・取り消し不可）。日常運用での非表示は引き続き「アーカイブ」を使用
 
 ---
 
@@ -151,29 +201,78 @@
 
 ---
 
-## ⚠️ 重要: 権限変更処理は暫定実装です
+## ✅ 権限変更・キャスト完全削除処理はCloud Functionsへ移行済み（PR5）
 
 `src/services/userAdminService.ts` にあるユーザー承認・権限変更・無効化・
-最後のowner保護は、**PR1時点ではクライアント側のFirestoreトランザクションで
-実装しています。**
+`accessibleStoreIds` 設定、および `src/services/castDeleteService.ts` の
+キャスト完全削除は、`functions/src/index.ts` の Callable Cloud Functions
+（`approveUser` / `changeUserRole` / `disableUser` / `enableUser` /
+`setAccessibleStores` / `deleteCastPermanently`）へ移行済みです。
 
-クライアント側のowner数チェックは、同時操作や改変されたクライアントに対して
-**完全な安全性を保証できません。** Firestore Rulesは自己role/status変更を
-拒否しますが、「最後の承認済みownerの降格・無効化禁止」はRulesでは集計が
-できないため厳密には表現できていません。
+- Firestore Rules 側も `users.role / status / accessibleStoreIds / approvedAt /
+  approvedBy / disabledAt` と `casts` の削除（Excelロールバック用の限定削除を
+  除く）をクライアントSDKから直接変更・実行できないよう制限しており、
+  これらの操作は必ずCloud Functions経由になります（Admin SDKはRulesを
+  バイパスするため矛盾しません）
+- 「最後の承認済みownerの降格・無効化禁止」は、Cloud Functions内の
+  Firestoreトランザクションで承認済みowner数を**その場でクエリして判定**する
+  ため、同時操作があっても正しく機能します（クライアント側の事前チェックのみに
+  依存しない厳密な保証）
+- 自分自身を無効化する場合は `confirmSelf: true` が必須（`disableUser`
+  Function）。未指定で自己無効化しようとすると `failed-precondition` で拒否
+- `setAccessibleStores` は各storeIdの実在・active判定・重複除去・
+  `'__all__'`拒否をサーバー側で行う。空配列（全店舗アクセスの剥奪）を
+  保存する場合は `confirmEmpty: true` が必須
+- `deleteCastPermanently` はキャストと関連データ（月別成績・面談・目標・
+  モチベーション・時給履歴）の削除、nameMatchingRulesのリンク解除、
+  キャスト本体削除、監査ログ記録を1つのFunction呼び出しで行う。
+  途中で失敗しても、同じcastIdで再実行すれば残っているデータだけを
+  処理して安全に完了できる（詳細は関数内コメント参照）
+- 監査ログの`actorName`は、すべてのFunctionでクライアントの入力を使わず
+  呼び出し元自身の`users/{uid}`ドキュメントからサーバー側で取得する
+  （クライアントが任意の名前を偽装できない）
+- 判定ロジックは `functions/src/lastOwnerGuard.ts` /
+  `functions/src/castDeleteGuard.ts` / `functions/src/storeAccessGuard.ts` に
+  純粋関数として分離し、`functions/` 単体のvitestで検証
+  （`npm --prefix functions test`）
 
-**本番運用前に、以下をCallable Cloud Functionsへ移行してください（残課題）:**
+### ⚠️ デプロイ順序（重要・必ずこの順序で行うこと）
 
-- [ ] `approveUser`（pendingユーザーの承認）
-- [ ] `changeUserRole`（role変更・ownerへの昇格・ownerからの降格）
-- [ ] `disableUser` / `enableUser`（無効化・再有効化）
-- [ ] `setAccessibleStores`（accessibleStoreIds変更）
-- [ ] 最後のowner保護のサーバー側での厳密な検証
+新しいFirestore Rulesは、ユーザー管理系フィールド（role/status/
+accessibleStoreIds等）とcastsの任意削除をクライアントSDKから**全面的に
+拒否**し、Cloud Functions（Admin SDK）経由でのみ変更できる設計です。
+そのため、**Cloud FunctionsをデプロイするよりRulesを先にデプロイすると、
+Functionsが存在しない間はユーザー承認・権限変更・無効化・店舗設定・
+キャスト完全削除が一切できなくなります**（Rulesが直接書き込みを拒否し、
+かつ代替のFunctionsも呼び出せないため）。必ず以下の順序でデプロイして
+ください。
 
-サービス層の関数シグネチャはCallable Functionsと同じ形（引数in/例外でエラー）
-に揃えているため、移行時は関数本体を `httpsCallable(...)` 呼び出しへ
-差し替えるだけで済む設計です。UIコンポーネントは必ずこのサービス層経由で
-操作しており、usersドキュメントを直接更新している箇所はありません。
+1. **Cloud Functionsをデプロイする**
+   ```bash
+   cd functions
+   npm install
+   npm run build
+   npm test              # functions/ 単体テストが全て通ることを確認
+   firebase deploy --only functions
+   ```
+2. **Callable Functionsの疎通確認をする**
+   本番（またはステージング）環境で、実際にownerアカウントから
+   `approveUser` 等を1回呼び出し、`unauthenticated` や `functions/not-found`
+   のようなエラーにならず正常応答することを確認する（Firebaseコンソール
+   の Functions ログ、またはアプリの「ユーザー管理」画面から）。
+3. **Firestore Rules と Indexes をデプロイする**
+   ```bash
+   firebase deploy --only firestore:rules,firestore:indexes
+   ```
+4. **ownerによる承認・権限変更・店舗設定の動作確認をする**
+   `/admin/users` 画面から、承認・権限変更・無効化・再有効化・
+   閲覧可能店舗の設定、`/casts/[castId]` からキャスト完全削除
+   （テスト用データで）が正しく動作し、`/admin/audit` に監査ログが
+   記録されることを確認する。
+5. **本番利用を開始する**
+
+エミュレータで動作確認する場合は `npm run emulators`（`functions` も
+`firebase.json` で起動対象に含まれています）。
 
 ---
 

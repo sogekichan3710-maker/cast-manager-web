@@ -12,7 +12,18 @@ import {
   updateStore,
   type StoreInput,
 } from "@/services/storeService";
-import { INITIAL_STORES, isOwner, type StoreWithId } from "@/types";
+import {
+  INITIAL_STORES,
+  WAGE_POLICIES,
+  isOwner,
+  type StoreWithId,
+  type WagePolicy,
+} from "@/types";
+
+const WAGE_POLICY_LABELS: Record<WagePolicy, string> = {
+  fixed: "固定時給制",
+  slide: "スライド（歩合）制",
+};
 
 export default function StoresPage() {
   const { firebaseUser, userDoc } = useAuth();
@@ -115,7 +126,8 @@ export default function StoresPage() {
                   <div>
                     <div className="name">{s.name}</div>
                     <div className="email">
-                      ID: {s.id} / code: {s.code} / 表示順: {s.order}
+                      ID: {s.id} / code: {s.code} / 表示順: {s.order} /
+                      {" "}{WAGE_POLICY_LABELS[s.wagePolicy ?? "fixed"]}
                     </div>
                   </div>
                 </div>
@@ -174,6 +186,7 @@ function StoreFormModal({
     color: store?.color ?? "#9c6bff",
     active: store?.active ?? true,
     order: store?.order ?? 0,
+    wagePolicy: store?.wagePolicy ?? "fixed",
   });
   const [storeId, setStoreId] = useState(store?.id ?? "");
   const [error, setError] = useState<string | null>(null);
@@ -269,6 +282,22 @@ function StoreFormModal({
               value={input.order}
               onChange={(e) => setInput((p) => ({ ...p, order: Number(e.target.value) }))}
             />
+          </div>
+          <div className="form-group">
+            <label>給与運用ルール（設定のみ。現在の計算・動作には影響しません）</label>
+            <select
+              className="form-input"
+              value={input.wagePolicy}
+              onChange={(e) =>
+                setInput((p) => ({ ...p, wagePolicy: e.target.value as WagePolicy }))
+              }
+            >
+              {WAGE_POLICIES.map((wp) => (
+                <option key={wp} value={wp}>
+                  {WAGE_POLICY_LABELS[wp]}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>

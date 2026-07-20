@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // =====================================================================
-// CAST MANAGER WEB — Firestore Security Rules (PR1)
+// CAST MANAGER WEB — Firestore Security Rules (PR1〜PR5)
 //
 // 設計方針:
 // - 未承認(pending) / 無効(disabled) / usersドキュメント不在 のユーザーは
@@ -9,18 +9,27 @@ rules_version = '2';
 // - users の新規作成は「自分自身・role=viewer・status=pending」のみ。
 //   role / status / accessibleStoreIds をユーザー自身が引き上げることは
 //   不可能。
-// - role / status / accessibleStoreIds の変更は owner のみ。
-//   ただし自分自身の role / status は変更できない
-//   （自己昇格・自己無効化事故・最後のowner自己降格をRulesレベルで防ぐ）。
+// - role / status / accessibleStoreIds / approvedAt / approvedBy /
+//   disabledAt の変更は、PR5でCloud Functions専用となった
+//   （クライアントSDKからはowner含め誰も直接変更できない。本人が変更
+//   できるのは displayName / updatedAt のみ）。承認・権限変更・無効化・
+//   最後のowner保護は functions/src/index.ts のCallable Functionsが
+//   Admin SDK（Rulesをバイパス）のトランザクション内で実行する。
 // - 業務データは storeId によるアクセス制御。owner は全店舗。
 //   admin / viewer は accessibleStoreIds に含まれる店舗のみ。
 // - 書き込みは admin 以上。viewer は読み取り専用。
-// - auditLogs は追記のみ（更新・削除不可）。
-//
-// ⚠️ Rulesで表現できない保護（クライアント／将来のCloud Functionsで担保）:
-// - 「最後の承認済みownerの降格・無効化禁止」: Rulesはコレクションの
-//   集計ができないため、自己変更禁止 + サービス層のトランザクション
-//   チェックで多層防御している。厳密な保証はCloud Functions移行時に行う。
+// - auditLogs は追記のみ（更新・削除不可）。owner のみ閲覧可。
+// - キャストの完全削除（PR5レビュー対応）は owner を含め、
+//   クライアントSDKからの任意の casts 削除を一切禁止する。完全削除は
+//   functions/src/index.ts の deleteCastPermanently（owner専用Callable
+//   Function・Admin SDK）でのみ実行できる（呼び出し元の再検証・関連データ
+//   の削除・nameMatchingRulesのリンク解除・監査ログ記録をサーバー側で
+//   アトミックに近い形で行う）。クライアントから許可されるのは、従来どおり
+//   Excelインポートが作成したキャスト（importBatchId付き）に限定した
+//   Batch単位ロールバック削除のみ（admin以上）。wageHistory の削除も同様に
+//   Excelロールバック（source: excel-import）に限定し、owner の無条件削除は
+//   廃止した（完全削除機能がCloud Functions化されたため、クライアント側で
+//   任意のwageHistoryを削除できる経路は不要になった）。
 // =====================================================================
 
 service cloud.firestore {
@@ -81,27 +90,22 @@ service cloud.firestore {
         && request.resource.data.approvedBy == null
         && request.resource.data.disabledAt == null;
 
-      // 更新:
-      //  (a) owner が他ユーザーを更新（role/status/accessibleStoreIds等）。
-      //      自分自身の role / status / accessibleStoreIds は変更不可。
-      //      email / createdAt は不変。
-      //  (b) 本人が displayName / updatedAt のみ更新。
+      // 更新: 本人が displayName / updatedAt のみをクライアントから更新できる。
+      //
+      // role / status / accessibleStoreIds / approvedAt / approvedBy /
+      // disabledAt の変更は PR5 で Cloud Functions（functions/src/index.ts の
+      // approveUser / changeUserRole / disableUser / enableUser /
+      // setAccessibleStores）へ移行し、クライアントSDKからの直接書き込みは
+      // ここで全面的に禁止する。Cloud FunctionsはAdmin SDKで動作し
+      // Security Rulesをバイパスするため、この制限と矛盾しない。
+      // 「最後の承認済みownerの降格・無効化禁止」もCloud Functions側の
+      // トランザクション内クエリで厳密に保証される（PR1〜4時点の
+      // クライアント側チェックのみに依存しない）。
       allow update: if
-        (
-          isOwner()
-          && request.auth.uid != uid
-          && request.resource.data.email == resource.data.email
-          && request.resource.data.createdAt == resource.data.createdAt
-          && request.resource.data.role in ['owner', 'admin', 'viewer']
-          && request.resource.data.status in ['pending', 'approved', 'disabled']
-        )
-        ||
-        (
-          isSignedIn()
-          && request.auth.uid == uid
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['displayName', 'updatedAt'])
-        );
+        isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['displayName', 'updatedAt']);
 
       // 削除は不可（無効化=status:'disabled'で扱う）
       allow delete: if false;
@@ -142,10 +146,13 @@ service cloud.firestore {
         && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.updatedBy == request.auth.uid;
-      // 完全削除はPR5でowner専用の安全な関連データ削除として実装予定。
-      // 例外: Excelインポートが新規作成したキャスト（importBatchId付き）のみ、
-      // Batch単位ロールバックのため owner / 許可店舗のadmin が削除できる。
-      // 手動作成のキャスト（importBatchIdなし）は従来どおり削除全面禁止。
+      // 完全削除（PR5レビュー対応）: owner を含め、クライアントSDKからの
+      // 任意のcasts削除は禁止。キャストの完全削除は
+      // functions/src/index.ts の deleteCastPermanently（owner専用
+      // Callable Function・Admin SDK・Rulesをバイパス）でのみ実行できる。
+      // クライアントから許可されるのは、Excelインポートが新規作成した
+      // キャスト（importBatchId付き）に限定したBatch単位ロールバックのみ
+      // （許可店舗のadmin以上）。
       allow delete: if isAdminOrAbove()
         && canAccessStore(resource.data.storeId)
         && resource.data.keys().hasAny(['importBatchId'])
@@ -231,8 +238,10 @@ service cloud.firestore {
         && request.resource.data.storeId != '__all__'
         && request.resource.data.createdBy == request.auth.uid;
       allow update: if false;
-      // 例外: Excelインポートが追加した履歴（source: excel-import）のみ、
-      // Batch単位ロールバックのため削除可。手動・移行の履歴は削除不可のまま
+      // 削除（PR5レビュー対応）: キャスト完全削除は Cloud Function
+      // （deleteCastPermanently）がAdmin SDKで行うため、クライアントSDKから
+      // 削除できるのはExcelインポートが追加した履歴（source: excel-import）
+      // のBatch単位ロールバックのみに限定する（owner含め無条件削除は不可）。
       allow delete: if isAdminOrAbove()
         && canAccessStore(resource.data.storeId)
         && resource.data.keys().hasAny(['source'])
@@ -298,11 +307,37 @@ service cloud.firestore {
       allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
     }
 
-    // ---------- 監査ログ（追記のみ） ----------
+    // ---------- 監査ログ（追記のみ・PR5レビュー対応で強化） ----------
+    // 信頼性の整理:
+    // - ユーザー承認/権限変更/無効化/再有効化/accessibleStoreIds変更・
+    //   キャスト完全削除の監査ログは functions/src/index.ts が Admin SDK
+    //   （Rulesをバイパス）で書き込む「サーバー確定」のログであり、
+    //   actorUid/actorName/action/createdAtのすべてがサーバー側で決定される
+    //   ため完全に信頼できる。クライアントはこれらのactionでは
+    //   一切auditLogsを作成できない（下のallowlistに含まれていない）。
+    // - それ以外（cast/monthlyResult/interview/goal/motivation/
+    //   wageHistory/import/migration/backup）の監査ログは、業務データの
+    //   変更と同一のバッチ/トランザクションでクライアントが書き込む。
+    //   userIdの偽装（他人になりすます）とcreatedAtの改竄（サーバー時刻
+    //   固定）は禁止しているが、before/after/documentIdの内容自体は
+    //   同時に行われる実際のデータ変更（各コレクションのRulesで検証済み）
+    //   と平仄が合っている前提のクライアント自己申告であり、対応する
+    //   コレクションの更新用Rules（storeId不変・createdBy/createdAt改竄
+    //   禁止等）と同程度の信頼性である。完全な証跡としての強制力は
+    //   Cloud Functions側のログより弱いことを運用上の前提とする。
     match /auditLogs/{docId} {
       allow read: if isOwner();
       allow create: if isApproved()
-        && request.resource.data.userId == request.auth.uid;
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.action is string
+        && request.resource.data.action in [
+             'cast.create', 'cast.update', 'cast.archive', 'cast.restore',
+             'monthlyResult.create', 'monthlyResult.update', 'monthlyResult.delete',
+             'interview.create', 'interview.update', 'goal.upsert', 'motivation.create',
+             'wageHistory.add', 'import.execute', 'import.rollback',
+             'migration.execute', 'backup.export'
+           ];
       allow update, delete: if false;
     }
 

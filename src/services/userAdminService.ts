@@ -1,37 +1,32 @@
 import {
   collection,
-  doc,
-  getDocs,
   onSnapshot,
   query,
-  runTransaction,
-  serverTimestamp,
-  where,
   type Unsubscribe,
 } from "firebase/firestore";
-import { getDb } from "@/lib/firebase";
+import { httpsCallable } from "firebase/functions";
+import { getDb, getFunctionsInstance } from "@/lib/firebase";
 import type { Role, UserDoc, UserWithId } from "@/types";
 
 /**
- * ユーザー管理サービス層。
+ * ユーザー管理サービス層（PR5でCloud Functionsへ移行）。
  *
- * ⚠️ 暫定実装（PR1時点）
- * ここにある承認・権限変更・無効化などの重要操作は、現時点では
- * クライアント側の Firestore トランザクションで実装している。
- * クライアント側の owner 数チェックは、同時操作や改変されたクライアント
- * に対して完全な安全性を保証できない。
+ * 承認・権限変更・無効化・accessibleStoreIds設定は functions/src/index.ts の
+ * Callable Functions（Admin SDK・Firestoreトランザクション内で承認済みowner数を
+ * クエリして判定）で実行する。Firestore Rules 側も users.role / status /
+ * accessibleStoreIds / approvedAt / approvedBy / disabledAt を
+ * クライアントから直接変更できないよう制限しており、これらの変更は
+ * 必ずこのサービス経由（＝Cloud Functions経由）になる。
  *
- * 本番運用前に、以下の関数を Callable Cloud Functions へ移行すること：
- *   - approveUser
- *   - changeUserRole
- *   - disableUser / enableUser
- *   - setAccessibleStores
+ * actorUid / actorName はクライアントから送らない（PR5レビュー対応）。
+ * actorUidはCallable Function呼び出し時のIDトークンからサーバー側が
+ * request.auth.uidとして取得し、actorNameも呼び出し元自身のusers
+ * ドキュメントからサーバー側が取得する。クライアントが送った値をサーバーが
+ * 信用することはない。
  *
- * この前提で、各関数のシグネチャは Cloud Functions の callable
- * （data in / result out、例外でエラー）と同じ形に揃えてある。
- * 置き換え時は関数本体を httpsCallable(...) 呼び出しに差し替えるだけでよい。
- * UIコンポーネントからは必ずこのサービス層経由で操作し、
- * users ドキュメントを直接更新しないこと。
+ * 「最後の承認済みownerの降格・無効化禁止」はCloud Functions側で
+ * トランザクション内の実クエリにより保証される（クライアント側の
+ * 事前チェックだけに頼らない）。
  */
 
 const USERS = "users";
@@ -52,119 +47,76 @@ export function subscribeAllUsers(
   );
 }
 
-/** 承認済みownerの数を数える（最後のowner保護のためのクライアント側チェック） */
-async function countApprovedOwners(): Promise<number> {
-  const q = query(
-    collection(getDb(), USERS),
-    where("role", "==", "owner"),
-    where("status", "==", "approved")
-  );
-  const snap = await getDocs(q);
-  return snap.size;
+/** Cloud Functions呼び出しエラーをUI向けメッセージへ変換する */
+function toErrorMessage(err: unknown): string {
+  const e = err as { code?: string; message?: string };
+  if (e?.message) return e.message;
+  return "操作に失敗しました";
+}
+
+/** pendingユーザーを承認する（owner専用・Cloud Functions経由） */
+export async function approveUser(targetUid: string): Promise<void> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "approveUser");
+    await fn({ targetUid });
+  } catch (err) {
+    throw new Error(toErrorMessage(err));
+  }
+}
+
+/** 権限を変更する（owner専用・Cloud Functions経由。最後のowner降格はサーバー側で拒否） */
+export async function changeUserRole(target: UserWithId, newRole: Role): Promise<void> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "changeUserRole");
+    await fn({ targetUid: target.uid, newRole });
+  } catch (err) {
+    throw new Error(toErrorMessage(err));
+  }
 }
 
 /**
- * 対象ユーザーが「最後の承認済みowner」かどうか。
- * 注意: クエリとトランザクションの間に競合が起こる可能性があり、
- * クライアント側では完全には防げない（README・残課題参照）。
+ * ユーザーを無効化する（owner専用・Cloud Functions経由）。
+ * 最後のownerの無効化はサーバー側で拒否される。
+ * 自分自身を無効化する場合は confirmSelf を true にして呼び出すこと
+ * （未確認のまま呼ぶとサーバー側で failed-precondition が返る）。
  */
-export async function isLastApprovedOwner(target: UserWithId): Promise<boolean> {
-  if (target.role !== "owner" || target.status !== "approved") return false;
-  const owners = await countApprovedOwners();
-  return owners <= 1;
-}
-
-/** pendingユーザーを承認する（owner専用・Rulesでも制限） */
-export async function approveUser(actorUid: string, targetUid: string): Promise<void> {
-  const db = getDb();
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, USERS, targetUid);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("対象ユーザーが見つかりません");
-    const data = snap.data() as UserDoc;
-    if (data.status === "approved") throw new Error("既に承認済みです");
-    tx.update(ref, {
-      status: "approved",
-      approvedAt: serverTimestamp(),
-      approvedBy: actorUid,
-      disabledAt: null,
-      updatedAt: serverTimestamp(),
-    });
-  });
-}
-
-/** 権限を変更する（owner専用） */
-export async function changeUserRole(
-  actorUid: string,
-  target: UserWithId,
-  newRole: Role
-): Promise<void> {
-  if (target.uid === actorUid && newRole !== "owner") {
-    // 自分自身の降格は最後のowner保護と自己ロックアウト防止のため必ず確認済みで呼ぶこと
-    const last = await isLastApprovedOwner(target);
-    if (last) throw new Error("最後のオーナーは降格できません");
+export async function disableUser(target: UserWithId, confirmSelf = false): Promise<void> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "disableUser");
+    await fn({ targetUid: target.uid, confirmSelf });
+  } catch (err) {
+    throw new Error(toErrorMessage(err));
   }
-  if (target.role === "owner" && newRole !== "owner") {
-    const last = await isLastApprovedOwner(target);
-    if (last) throw new Error("最後のオーナーは降格できません");
+}
+
+/** 無効化ユーザーを再有効化する（owner専用・Cloud Functions経由） */
+export async function enableUser(targetUid: string): Promise<void> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "enableUser");
+    await fn({ targetUid });
+  } catch (err) {
+    throw new Error(toErrorMessage(err));
   }
-  const db = getDb();
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, USERS, target.uid);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("対象ユーザーが見つかりません");
-    tx.update(ref, { role: newRole, updatedAt: serverTimestamp() });
-  });
 }
 
-/** ユーザーを無効化する（owner専用） */
-export async function disableUser(actorUid: string, target: UserWithId): Promise<void> {
-  if (target.role === "owner" && target.status === "approved") {
-    const last = await isLastApprovedOwner(target);
-    if (last) throw new Error("最後のオーナーは無効化できません");
-  }
-  const db = getDb();
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, USERS, target.uid);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("対象ユーザーが見つかりません");
-    tx.update(ref, {
-      status: "disabled",
-      disabledAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  });
-}
-
-/** 無効化ユーザーを再有効化する（owner専用・approvedに戻す） */
-export async function enableUser(actorUid: string, targetUid: string): Promise<void> {
-  const db = getDb();
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, USERS, targetUid);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("対象ユーザーが見つかりません");
-    const data = snap.data() as UserDoc;
-    if (data.status !== "disabled") throw new Error("無効化されたユーザーではありません");
-    tx.update(ref, {
-      status: "approved",
-      approvedAt: serverTimestamp(),
-      approvedBy: actorUid,
-      disabledAt: null,
-      updatedAt: serverTimestamp(),
-    });
-  });
-}
-
-/** 閲覧可能店舗を設定する（owner専用） */
+/**
+ * 閲覧可能店舗を設定する（owner専用・Cloud Functions経由）。
+ * 空配列（全店舗アクセスの剥奪）を保存する場合は confirmEmpty を true に
+ * すること。指定しないままだとサーバー側で failed-precondition が返る
+ * （誤操作でユーザーの全店舗アクセスを奪うことを防ぐ確認）。
+ * サーバー側で各storeIdの実在・active判定・重複除去・'__all__'拒否を行う。
+ */
 export async function setAccessibleStores(
   targetUid: string,
-  storeIds: string[]
-): Promise<void> {
-  const db = getDb();
-  await runTransaction(db, async (tx) => {
-    const ref = doc(db, USERS, targetUid);
-    const snap = await tx.get(ref);
-    if (!snap.exists()) throw new Error("対象ユーザーが見つかりません");
-    tx.update(ref, { accessibleStoreIds: storeIds, updatedAt: serverTimestamp() });
-  });
+  storeIds: string[],
+  confirmEmpty = false
+): Promise<string[]> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "setAccessibleStores");
+    const res = await fn({ targetUid, storeIds, confirmEmpty });
+    const data = res.data as { ok: boolean; storeIds: string[] };
+    return data.storeIds;
+  } catch (err) {
+    throw new Error(toErrorMessage(err));
+  }
 }

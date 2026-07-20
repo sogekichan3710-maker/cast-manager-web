@@ -93,6 +93,7 @@ export default function ImportHistoryPage() {
     try {
       const res = await rollbackImportBatch(
         firebaseUser.uid,
+        userDoc?.displayName ?? "",
         selected,
         setProgress,
         () => cancelRef.current

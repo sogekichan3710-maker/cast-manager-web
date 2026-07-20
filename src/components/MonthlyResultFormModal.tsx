@@ -46,7 +46,7 @@ const NUM_FIELDS: Array<{ key: keyof MonthlyResultInput; label: string; step?: n
 ];
 
 export function MonthlyResultFormModal({ cast, result, defaultMonth, onClose, onSaved }: Props) {
-  const { firebaseUser } = useAuth();
+  const { firebaseUser, userDoc } = useAuth();
   const [input, setInput] = useState<MonthlyResultInput>(() =>
     result
       ? {
@@ -87,7 +87,7 @@ export function MonthlyResultFormModal({ cast, result, defaultMonth, onClose, on
     setError(null);
     setSaving(true);
     try {
-      await saveMonthlyResult(firebaseUser.uid, input, {
+      await saveMonthlyResult(firebaseUser.uid, userDoc?.displayName ?? "", input, {
         overwrite,
         expectedUpdatedAt: result ? result.updatedAt : null,
       });

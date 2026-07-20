@@ -11,12 +11,34 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { addAuditLogToTransaction } from "@/services/auditLogService";
 import {
   ALL_STORES_FILTER,
   monthlyResultId,
   type MonthlyResultDoc,
   type MonthlyResultWithId,
 } from "@/types";
+
+/** 監査ログの before/after 用に業務フィールドのみ抽出（メタ情報は含めない） */
+function mrBusinessFields(d: Pick<MonthlyResultDoc,
+  "totalSales" | "payment" | "honshimeiCount" | "honshimeiGroupCount" |
+  "customerCount" | "jounaiCount" | "douhan" | "workDays" | "workHours" |
+  "absent" | "notes"
+>): Record<string, unknown> {
+  return {
+    totalSales: d.totalSales,
+    payment: d.payment,
+    honshimeiCount: d.honshimeiCount,
+    honshimeiGroupCount: d.honshimeiGroupCount,
+    customerCount: d.customerCount,
+    jounaiCount: d.jounaiCount,
+    douhan: d.douhan,
+    workDays: d.workDays,
+    workHours: d.workHours,
+    absent: d.absent,
+    notes: d.notes,
+  };
+}
 
 const COL = "monthlyResults";
 
@@ -184,8 +206,14 @@ export class MrExistsError extends Error {
   }
 }
 
+/**
+ * 手動フォームからの保存。Excelインポート（executeExcelImport）とは別経路。
+ * lastManualEditAt / lastManualEditBy を更新し、Excel更新との新旧判別に使う
+ * （lastImportAt はここでは触らない＝直前のインポート記録を保持する）。
+ */
 export async function saveMonthlyResult(
   actorUid: string,
+  actorName: string,
   input: MonthlyResultInput,
   opts: { overwrite: boolean; expectedUpdatedAt: Timestamp | null }
 ): Promise<void> {
@@ -213,12 +241,24 @@ export async function saveMonthlyResult(
       absent: input.absent,
       notes: input.notes.trim(),
       batchId: null,
+      lastManualEditAt: serverTimestamp(),
+      lastManualEditBy: actorUid,
       updatedAt: serverTimestamp(),
       updatedBy: actorUid,
     };
 
     if (!snap.exists()) {
       tx.set(ref, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
+      addAuditLogToTransaction(tx, {
+        actorUid,
+        actorName,
+        action: "monthlyResult.create",
+        collection: COL,
+        documentId: id,
+        storeId: input.storeId,
+        before: null,
+        after: mrBusinessFields(data),
+      });
       return;
     }
 
@@ -233,17 +273,42 @@ export async function saveMonthlyResult(
       throw new MrExistsError(current.month);
     }
     tx.update(ref, data);
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "monthlyResult.update",
+      collection: COL,
+      documentId: id,
+      storeId: input.storeId,
+      before: mrBusinessFields(current),
+      after: mrBusinessFields(data),
+    });
   });
 }
 
 /** 月別成績を削除する（admin以上・Rulesでも制限） */
-export async function deleteMonthlyResult(resultId: string): Promise<void> {
+export async function deleteMonthlyResult(
+  actorUid: string,
+  actorName: string,
+  resultId: string
+): Promise<void> {
   const db = getDb();
   await runTransaction(db, async (tx) => {
     const ref = doc(db, COL, resultId);
     const snap = await tx.get(ref);
     if (!snap.exists()) throw new Error("成績データが見つかりません");
+    const current = snap.data() as MonthlyResultDoc;
     tx.delete(ref);
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "monthlyResult.delete",
+      collection: COL,
+      documentId: resultId,
+      storeId: current.storeId,
+      before: mrBusinessFields(current),
+      after: null,
+    });
   });
 }
 

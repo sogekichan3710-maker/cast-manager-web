@@ -111,6 +111,7 @@ export default function MigrationPage() {
     try {
       const res = await executeMigration(
         firebaseUser.uid,
+        userDoc?.displayName ?? "",
         fileName,
         preview.conversion,
         setProgress,
