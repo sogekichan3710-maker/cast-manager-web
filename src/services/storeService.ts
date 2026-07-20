@@ -13,6 +13,7 @@ import {
   INITIAL_STORES,
   type StoreDoc,
   type StoreWithId,
+  type WagePolicy,
 } from "@/types";
 
 const STORES = "stores";
@@ -39,6 +40,8 @@ export interface StoreInput {
   color: string;
   active: boolean;
   order: number;
+  /** 給与運用ルール（PR5・設定のみ。現在の計算・動作には影響しない） */
+  wagePolicy: WagePolicy;
 }
 
 export function validateStoreInput(input: StoreInput): string | null {
@@ -65,6 +68,7 @@ export async function createStore(
     color: input.color,
     active: input.active,
     order: input.order,
+    wagePolicy: input.wagePolicy,
     createdAt: serverTimestamp(),
     createdBy: actorUid,
     updatedAt: serverTimestamp(),
@@ -115,6 +119,7 @@ export async function seedInitialStores(actorUid: string): Promise<void> {
       color: s.color,
       active: true,
       order: s.order,
+      wagePolicy: s.wagePolicy,
       createdAt: serverTimestamp(),
       createdBy: actorUid,
       updatedAt: serverTimestamp(),

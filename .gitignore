@@ -1,6 +1,8 @@
 # dependencies
 node_modules/
 rules-test/node_modules/
+functions/node_modules/
+functions/lib/
 
 # next.js
 .next/
