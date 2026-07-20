@@ -643,7 +643,13 @@ textarea.form-input {
 
 /* ---------- PR3.5: ダッシュボード ---------- */
 .stats-grid-dash {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* カード7枚構成（PR4で項目整理）。auto-fitで余白を作らず均等に埋める */
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+@media (max-width: 560px) {
+  .stats-grid-dash {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 .stat-sub {
   font-size: 10px;
@@ -720,4 +726,108 @@ textarea.form-input {
   color: var(--text3);
   margin-left: 4px;
   font-weight: 400;
+}
+
+/* ===== PR4: 移行・インポート・エクスポート ===== */
+.section-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 18px;
+}
+.section-card h2 {
+  font-size: 15px;
+}
+.section-card details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--acc2);
+}
+.import-row-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--bg2);
+}
+.import-row-card .row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.import-row-card .row-name {
+  font-weight: 700;
+  font-size: 14px;
+}
+.import-row-card .candidate {
+  font-size: 12px;
+  color: var(--text3);
+  margin: 2px 0;
+  word-break: break-word;
+}
+.import-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.choice-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text2);
+  cursor: pointer;
+}
+.choice-btn.selected {
+  border-color: var(--acc);
+  background: var(--acc);
+  color: #fff;
+}
+.progress-note {
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* ===== PR4追加: インポート操作性改善 ===== */
+.analyze-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg3);
+  font-size: 13px;
+}
+.plan-summary-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.bulk-bar .form-input {
+  width: auto;
 }

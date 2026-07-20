@@ -76,6 +76,8 @@ export interface CastDoc {
   memo: string;
   customerNotes: string;
   archived: boolean;
+  /** Excelインポートで新規作成されたキャストのみ持つ（Batch単位ロールバック用） */
+  importBatchId?: string | null;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -290,6 +292,8 @@ export interface WageHistoryDoc {
   newHourlyWage: number;
   effectiveMonth: string;
   reason: string;
+  /** 記録元。'manual' | 'excel-import' | 'migration'（PR3以前のデータには存在しない） */
+  source?: string;
   createdAt: Timestamp;
   createdBy: string;
 }
@@ -331,16 +335,126 @@ export function fmtDiff(v: number | null): string {
   return s + Math.abs(Math.round(v)).toLocaleString("ja-JP");
 }
 
-/** importBatches/{batchId} */
+/**
+ * インポート/移行の実行状態。
+ * - cancelled: 1件も保存せずにキャンセル
+ * - partial-cancelled: 一部保存済みでキャンセル（変更記録あり・ロールバック可）
+ * いずれの場合も completed にはしない。
+ */
+export const RUN_STATUSES = [
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+  "partial-cancelled",
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** ロールバック状態 */
+export const ROLLBACK_STATUSES = ["none", "completed", "partial", "failed"] as const;
+export type RollbackStatus = (typeof ROLLBACK_STATUSES)[number];
+
+/**
+ * インポートがFirestoreへ加えた変更1件の記録（Batch単位ロールバック用）。
+ * before / after には変更した業務フィールドのみを保持する
+ * （Timestamp系メタは持たない。復元時のupdatedAt等は実行時に再設定）。
+ */
+export interface BatchChange {
+  type:
+    | "cast-created"
+    | "cast-updated"
+    | "mr-created"
+    | "mr-updated"
+    | "wage-added"
+    | "rule-created"
+    | "rule-updated";
+  collection: string;
+  docId: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
+/** importBatches/{batchId} — Excelインポート1回分の履歴 */
 export interface ImportBatchDoc {
   storeId: string;
   fileName: string;
-  targetMonth: string;
-  status: "completed" | "failed";
+  targetMonth: string; // YYYY-MM
+  status: RunStatus;
+  totalRows: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  errorCount: number;
   summary: string;
-  migrationId: string | null;
+  /** このインポートが加えた変更の記録（ロールバック用）。旧データには存在しない */
+  changes?: BatchChange[];
+  rollbackStatus?: RollbackStatus;
+  rollbackAt?: Timestamp | null;
+  rollbackBy?: string | null;
+  rollbackSummary?: string;
   createdAt: Timestamp;
   createdBy: string;
+  completedAt: Timestamp | null;
+}
+
+/** 画面用 id 付きインポート履歴 */
+export interface ImportBatchWithId extends ImportBatchDoc {
+  id: string;
+}
+
+/**
+ * migrationRuns/{migrationId} — 旧ローカルデータ移行1回分の記録（owner専用）。
+ * 冪等性は「決定的ドキュメントID + 既存はskip」で担保し、本コレクションは
+ * 実行履歴・監査のために保持する。
+ */
+export interface MigrationRunDoc {
+  fileName: string;
+  sourceFormat: string; // 'cm2_v4' | 'cmweb-backup_v1' 等
+  status: RunStatus;
+  summary: string;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+  createdBy: string;
+  errorSummary: string;
+}
+
+export interface MigrationRunWithId extends MigrationRunDoc {
+  id: string;
+}
+
+/** nameMatchingRules の確定内容 */
+export const RULE_DECISIONS = ["link", "new", "exclude"] as const;
+export type RuleDecision = (typeof RULE_DECISIONS)[number];
+
+/**
+ * nameMatchingRules/{ruleId} — Excelインポートの照合確定ルール。
+ * ドキュメントID = `${storeId}__${normalizedName}`（storeIdと正規化名で一意）。
+ * 一度確定したルールは次回インポートの候補判定に利用するが、
+ * リンク先キャスト不在・店舗違い・大幅な時給差・アーカイブ済み・
+ * 同名候補複数の場合は自動確定せず再確認する（importMatching参照）。
+ */
+export interface NameMatchingRuleDoc {
+  storeId: string;
+  sourceName: string;
+  normalizedName: string;
+  decision: RuleDecision;
+  linkedCastId: string | null;
+  hourlyWage: number | null; // 確定時点の時給（時給乖離の再確認判定に使用）
+  active: boolean;
+  createdAt: Timestamp;
+  createdBy: string;
+  updatedAt: Timestamp;
+  updatedBy: string;
+}
+
+export interface NameMatchingRuleWithId extends NameMatchingRuleDoc {
+  id: string;
+}
+
+/** nameMatchingRules のドキュメントID（storeId × 正規化名で決定的に一意） */
+export function nameMatchingRuleId(storeId: string, normalizedName: string): string {
+  // Firestore ドキュメントIDに '/' は使えないため置換する
+  return `${storeId}__${normalizedName.replace(/\//g, "_")}`;
 }
 
 /** auditLogs/{logId} */
