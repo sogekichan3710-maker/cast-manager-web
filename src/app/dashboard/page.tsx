@@ -22,7 +22,6 @@ import {
 import {
   ALL_STORES_FILTER,
   currentMonth,
-  fmtDiff,
   isAdminOrAbove,
   monthToJa,
 } from "@/types";
@@ -137,7 +136,9 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* ── 店舗状況（旧版dashStats + 合計/平均カード） ── */}
+            {/* ── 店舗状況（本指名/顧客数/場内/同伴/出勤/差額合計は
+                 月別成績・ランキングと重複するためダッシュボードには表示しない。
+                 集計関数 calcDashboardKpi 自体は変更しない ── */}
             <div className="stats-grid stats-grid-dash">
               <Kpi label="在籍人数" value={`${kpi.activeCount}名`} sub={`全${kpi.allCount}名中`} accent />
               <Kpi
@@ -150,6 +151,7 @@ export default function DashboardPage() {
                 }
                 green
               />
+              <Kpi label="総支給額" value={`¥${kpi.tPay.toLocaleString()}`} />
               <Kpi
                 label="平均時給（月）"
                 value={kpi.avgWageMonth != null ? `¥${kpi.avgWageMonth.toLocaleString()}` : "–"}
@@ -165,26 +167,6 @@ export default function DashboardPage() {
                 label="平均実質時給"
                 value={kpi.aggRealWage != null ? `¥${kpi.aggRealWage.toLocaleString()}` : "–"}
                 sub="支給額÷出勤時間"
-              />
-              <Kpi label="総支給額" value={`¥${kpi.tPay.toLocaleString()}`} />
-              <Kpi label="本指名本数" value={`${kpi.tHonshimei}本`} sub={`${kpi.tHonGroup}組`} />
-              <Kpi label="顧客数" value={`${kpi.tCustomer}名`} />
-              <Kpi label="場内指名" value={`${kpi.tJounai}本`} />
-              <Kpi label="同伴" value={`${kpi.tDouhan}件`} />
-              <Kpi
-                label="出勤"
-                value={`${kpi.tWork}日`}
-                sub={`${kpi.tWorkHours.toFixed(1)}h / 出勤${kpi.workingCnt}名`}
-              />
-              <Kpi
-                label="給与差額 合計"
-                value={fmtDiff(kpi.tPayDiff)}
-                sub={kpi.avgPayDiff != null ? `平均 ${fmtDiff(kpi.avgPayDiff)}` : undefined}
-              />
-              <Kpi
-                label="時給差額 合計"
-                value={fmtDiff(kpi.tWageDiff)}
-                sub={kpi.avgWageDiff != null ? `平均 ${fmtDiff(kpi.avgWageDiff)}` : undefined}
               />
               <Kpi
                 label="年間累計売上"
