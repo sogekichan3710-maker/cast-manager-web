@@ -70,11 +70,15 @@ export default function AdminUsersPage() {
 
   function onApprove(u: UserWithId) {
     if (!firebaseUser) return;
-    void run(u.uid, () => approveUser(firebaseUser.uid, u.uid));
+    const actorName = userDoc?.displayName ?? "";
+    void run(u.uid, () => approveUser(firebaseUser.uid, actorName, u.uid));
   }
 
   function onChangeRole(u: UserWithId, newRole: Role) {
-    if (!firebaseUser || newRole === u.role) return;
+    if (!firebaseUser) return;
+    if (newRole === u.role) return;
+    // クライアント側の事前チェックはUX向けの表示専用。実際の保証は
+    // Cloud Functions（changeUserRole）がトランザクション内で行う。
     if (isLastOwner(u) && newRole !== "owner") {
       setActionError("最後のオーナーは降格できません。先に別のオーナーを追加してください。");
       return;
@@ -85,16 +89,20 @@ export default function AdminUsersPage() {
       );
       if (!ok) return;
     }
-    void run(u.uid, () => changeUserRole(firebaseUser.uid, u, newRole));
+    const actorName = userDoc?.displayName ?? "";
+    void run(u.uid, () => changeUserRole(firebaseUser.uid, actorName, u, newRole));
   }
 
   function onDisable(u: UserWithId) {
     if (!firebaseUser) return;
+    // クライアント側の事前チェックはUX向けの表示専用。実際の保証は
+    // Cloud Functions（disableUser）がトランザクション内で行う。
     if (isLastOwner(u)) {
       setActionError("最後のオーナーは無効化できません。先に別のオーナーを追加してください。");
       return;
     }
-    if (u.uid === firebaseUser.uid) {
+    const isSelf = u.uid === firebaseUser.uid;
+    if (isSelf) {
       const ok = window.confirm(
         "自分自身を無効化すると、即座にアプリへアクセスできなくなります。\n本当に無効化しますか？"
       );
@@ -103,12 +111,16 @@ export default function AdminUsersPage() {
       const ok = window.confirm(`${u.displayName}（${u.email}）を無効化しますか？`);
       if (!ok) return;
     }
-    void run(u.uid, () => disableUser(firebaseUser.uid, u));
+    const actorName = userDoc?.displayName ?? "";
+    // 自分自身の無効化はCloud Functions側でも確認フラグ（confirmSelf）が
+    // 必須（誤操作による自己ロックアウト防止の多層防御）
+    void run(u.uid, () => disableUser(firebaseUser.uid, actorName, u, isSelf));
   }
 
   function onEnable(u: UserWithId) {
     if (!firebaseUser) return;
-    void run(u.uid, () => enableUser(firebaseUser.uid, u.uid));
+    const actorName = userDoc?.displayName ?? "";
+    void run(u.uid, () => enableUser(firebaseUser.uid, actorName, u.uid));
   }
 
   return (

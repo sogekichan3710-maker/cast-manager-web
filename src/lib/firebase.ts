@@ -5,6 +5,11 @@ import {
   getFirestore,
   type Firestore,
 } from "firebase/firestore";
+import {
+  connectFunctionsEmulator,
+  getFunctions,
+  type Functions,
+} from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -26,6 +31,7 @@ function assertConfig(): void {
 let app: FirebaseApp;
 let authInstance: Auth;
 let dbInstance: Firestore;
+let functionsInstance: Functions;
 let emulatorConnected = false;
 
 export function getFirebaseApp(): FirebaseApp {
@@ -52,6 +58,19 @@ export function getDb(): Firestore {
   return dbInstance;
 }
 
+/**
+ * Cloud Functions（PR5: ユーザー承認・権限変更・無効化・
+ * accessibleStoreIds設定）呼び出し用。リージョンはFirestore/Authと
+ * 同じデフォルトプロジェクト設定に従う。
+ */
+export function getFunctionsInstance(): Functions {
+  if (!functionsInstance) {
+    functionsInstance = getFunctions(getFirebaseApp());
+    maybeConnectEmulators();
+  }
+  return functionsInstance;
+}
+
 function maybeConnectEmulators(): void {
   if (emulatorConnected) return;
   if (process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR !== "true") return;
@@ -59,7 +78,8 @@ function maybeConnectEmulators(): void {
   try {
     if (authInstance) connectAuthEmulator(authInstance, "http://127.0.0.1:9099", { disableWarnings: true });
     if (dbInstance) connectFirestoreEmulator(dbInstance, "127.0.0.1", 8080);
-    emulatorConnected = !!(authInstance && dbInstance);
+    if (functionsInstance) connectFunctionsEmulator(functionsInstance, "127.0.0.1", 5001);
+    emulatorConnected = !!(authInstance && dbInstance && functionsInstance);
   } catch {
     // 既に接続済みの場合は無視
     emulatorConnected = true;
