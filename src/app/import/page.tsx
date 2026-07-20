@@ -93,7 +93,8 @@ export default function ImportPage() {
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
   const [existingMap, setExistingMap] = useState<Map<string, MonthlyResultWithId>>(new Map());
   const [statusChoices, setStatusChoices] = useState<Map<string, string>>(new Map());
-  const [filter, setFilter] = useState<RowFilterId>("all");
+  // 既定は「要対応のみ」: 完全一致1名の自動紐付け・完全一致なしの自動新規は表示しない
+  const [filter, setFilter] = useState<RowFilterId>("attention");
 
   const [bulkNewOpen, setBulkNewOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -139,7 +140,7 @@ export default function ImportPage() {
     setMatchResult(null);
     setRowStates([]);
     setStatusChoices(new Map());
-    setFilter("all");
+    setFilter("attention");
     setResult(null);
     setProgress(null);
     setConfirmOpen(false);
@@ -153,7 +154,7 @@ export default function ImportPage() {
     setMatchResult(null);
     setRowStates([]);
     setStatusChoices(new Map());
-    setFilter("all");
+    setFilter("attention");
     setResult(null);
     setConfirmOpen(false);
     setBulkNewOpen(false);
@@ -525,8 +526,12 @@ export default function ImportPage() {
             <section className="section-card" style={{ marginBottom: 16 }}>
               <h2 style={{ marginBottom: 4 }}>2. 照合確認</h2>
               <p className="page-sub" style={{ marginBottom: 10 }}>
-                {storeName(storeId)} / {monthToJa(month)} — 自動確定済みの行はそのまま実行対象に
-                含まれます。未選択（要確認）の行だけ選択してください。
+                {storeName(storeId)} / {monthToJa(month)} — 照合は源氏名の
+                <strong>完全一致のみ</strong>で判定します（部分一致・類似候補はありません。
+                「れい」「れいな」「みれい」は別人として扱います）。
+                完全一致1名は自動で紐付け、完全一致なしは新規登録として自動確定され、
+                この画面には表示されません（絞り込みで確認・変更可）。
+                表示されるのは対応が必要な行だけです。
               </p>
 
               {/* 集計バー + 未選択への導線（sticky） */}
@@ -615,7 +620,9 @@ export default function ImportPage() {
 
               {visibleIndices.length === 0 ? (
                 <p className="empty-note" style={{ padding: 12 }}>
-                  この絞り込みに該当する行はありません
+                  {filter === "attention"
+                    ? "対応が必要な行はありません（すべて自動確定済みです）。そのまま最終確認へ進めます。"
+                    : "この絞り込みに該当する行はありません"}
                 </p>
               ) : (
                 visibleIndices.map((idx) => (
@@ -623,8 +630,6 @@ export default function ImportPage() {
                     key={rowStates[idx].match.row.rowNumber}
                     rs={rowStates[idx]}
                     existingMap={existingMap}
-                    storeName={storeName}
-                    targetStoreId={storeId}
                     onChange={(patch) => updateRow(idx, patch)}
                     disabled={running}
                   />
@@ -960,15 +965,11 @@ const ACTION_LABELS: Record<RowAction, string> = {
 function RowCard({
   rs,
   existingMap,
-  storeName,
-  targetStoreId,
   onChange,
   disabled,
 }: {
   rs: RowState;
   existingMap: Map<string, MonthlyResultWithId>;
-  storeName: (id: string) => string;
-  targetStoreId: string;
   onChange: (patch: Partial<RowState>) => void;
   disabled: boolean;
 }) {
@@ -998,7 +999,7 @@ function RowCard({
             <span className="badge badge-yellow" style={{ marginLeft: 8 }}>時給変更候補</span>
           )}
           {match.sameNameConfirm && (
-            <span className="badge badge-orange" style={{ marginLeft: 8 }}>同名・類似候補</span>
+            <span className="badge badge-orange" style={{ marginLeft: 8 }}>完全一致が複数</span>
           )}
         </div>
         <span className="page-sub">
@@ -1024,7 +1025,7 @@ function RowCard({
                 type="radio"
                 name={`cand-${row.rowNumber}`}
                 checked={rs.castId === c.cast.id && rs.action !== "new" && rs.action !== "exclude" && rs.action !== null}
-                disabled={disabled || c.cast.storeId !== targetStoreId}
+                disabled={disabled}
                 onChange={() => {
                   const wageDiffers =
                     row.hourlyWage != null && row.hourlyWage > 0 && row.hourlyWage !== c.cast.hourlyWage;
@@ -1037,14 +1038,11 @@ function RowCard({
               />
               <strong>{c.cast.stageName}</strong>
               {c.cast.realName && `（本名: ${c.cast.realName}）`}
-              ／ {storeName(c.cast.storeId)}
               ／ 現在時給 ¥{c.cast.hourlyWage.toLocaleString()}
               {row.hourlyWage != null && ` ／ Excel時給 ¥${row.hourlyWage.toLocaleString()}`}
               ／ {c.reason}
-              ／ {c.matchType === "exact" ? "完全一致" : "類似候補"}
               {c.cast.status !== "在籍" && ` ／ ${c.cast.status}`}
               {c.cast.archived && " ／ アーカイブ済み"}
-              {c.cast.storeId !== targetStoreId && "（他店舗のため紐付け不可・参考表示）"}
             </label>
           ))}
         </div>

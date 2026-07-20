@@ -66,7 +66,7 @@ describe("matchExcelRows: 基本照合", () => {
     expect(matches[0].suggestedAction).toBe("link");
     expect(matches[0].suggestedCastId).toBe("c1");
     expect(matches[0].needsConfirm).toBe(false);
-    expect(matches[0].candidates[0].matchType).toBe("exact");
+    expect(matches[0].candidates).toHaveLength(1);
   });
 
   it("全角半角・空白の揺れ（NFKC正規化）でも一致する", () => {
@@ -117,25 +117,25 @@ describe("確認フロー2: 同名キャスト候補", () => {
     expect(m.candidates).toHaveLength(2);
   });
 
-  it("類似候補のみ（部分一致・本名一致・他店舗同名）→ 要確認・候補理由を提示", () => {
+  it("部分一致・本名一致・ふりがな一致・他店舗同名は候補にしない（別人として新規扱い）", () => {
+    // 「れい」「れいな」「みれい」は別人。類似判定は内部でも行わない
     const { matches } = matchExcelRows(
-      [row("あい")],
+      [row("れい")],
       "virgo",
       [
-        cast({ id: "c1", stageName: "あいり" }), // 部分一致
-        cast({ id: "c2", stageName: "ももか", realName: "あい" }), // 本名一致
-        cast({ id: "c3", stageName: "あい", storeId: "regina" }), // 他店舗同名
+        cast({ id: "c1", stageName: "れいな" }), // 部分一致 → 別人
+        cast({ id: "c2", stageName: "みれい" }), // 部分一致 → 別人
+        cast({ id: "c3", stageName: "ももか", realName: "れい" }), // 本名一致 → 候補にしない
+        cast({ id: "c4", stageName: "あい", kana: "れい" }), // ふりがな一致 → 候補にしない
+        cast({ id: "c5", stageName: "れい", storeId: "regina" }), // 他店舗同名 → 候補にしない
       ],
       []
     );
     const m = matches[0];
-    expect(m.needsConfirm).toBe(true);
-    expect(m.sameNameConfirm).toBe(true);
-    const reasons = m.candidates.map((c) => c.reason);
-    expect(reasons).toContain("源氏名が部分一致");
-    expect(reasons).toContain("本名が一致");
-    expect(reasons).toContain("他店舗に同名キャスト");
-    expect(m.candidates.every((c) => c.matchType === "similar")).toBe(true);
+    expect(m.candidates).toHaveLength(0);
+    expect(m.suggestedAction).toBe("new");
+    expect(m.needsConfirm).toBe(false); // 完全一致なし → 新規として自動確定
+    expect(m.sameNameConfirm).toBe(false);
   });
 });
 
