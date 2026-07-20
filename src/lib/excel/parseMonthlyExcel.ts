@@ -278,7 +278,7 @@ function detectHeader(grid: unknown[][], maxScan = 30): HeaderDetection | null {
   return best;
 }
 
-interface SheetScan {
+export interface SheetScan {
   name: string;
   header: HeaderDetection | null;
   grid: unknown[][];
@@ -367,35 +367,37 @@ function sheetNameScore(name: string): number {
   return score;
 }
 
-/**
- * ExcelのArrayBufferをパースする。
- * @param opts.sheetName 指定した場合はそのシートを強制採用（手動選択UI用）
- */
-export function parseMonthlyExcel(
-  buffer: ArrayBuffer,
-  opts?: { sheetName?: string }
-): ExcelParseResult {
+/** Excelバイナリをワークブックとして読み込む（シート解析段階） */
+export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
   const wb = XLSX.read(buffer, { type: "array" });
   if (wb.SheetNames.length === 0) throw new Error("Excelにシートがありません");
+  return wb;
+}
 
-  // ---- 全シートを走査してスコアリング ----
-  const scans: SheetScan[] = wb.SheetNames.map((name) => {
-    const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], {
-      header: 1,
-      raw: true,
-      defval: "",
-    });
-    const header = detectHeader(grid);
-    if (!header) {
-      return { name, header: null, grid, rows: [], excluded: [], dataStartRow: null, dataEndRow: null, score: sheetNameScore(name) - 1000 };
-    }
-    const extracted = extractRows(grid, header);
-    // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
-    const score =
-      sheetNameScore(name) + header.knownCols * 10 + Math.min(extracted.rows.length, 50);
-    return { name, header, grid, ...extracted, score };
+/** 1シートを走査する（ヘッダー判定+データ抽出段階。非同期版から1枚ずつ呼ぶ） */
+export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], {
+    header: 1,
+    raw: true,
+    defval: "",
   });
+  const header = detectHeader(grid);
+  if (!header) {
+    return { name, header: null, grid, rows: [], excluded: [], dataStartRow: null, dataEndRow: null, score: sheetNameScore(name) - 1000 };
+  }
+  const extracted = extractRows(grid, header);
+  // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
+  const score =
+    sheetNameScore(name) + header.knownCols * 10 + Math.min(extracted.rows.length, 50);
+  return { name, header, grid, ...extracted, score };
+}
 
+/** 走査済み全シートから採用シートを決定し、結果を組み立てる */
+export function assembleParseResult(
+  scans: SheetScan[],
+  sheetNames: string[],
+  opts?: { sheetName?: string }
+): ExcelParseResult {
   // ---- 採用シートの決定 ----
   let adopted: SheetScan | undefined;
   if (opts?.sheetName) {
@@ -407,7 +409,7 @@ export function parseMonthlyExcel(
       .sort((a, b) => b.score - a.score)[0];
     if (!adopted) {
       // ヘッダー+データを検出できたシートが1つも無い
-      const sheetList = wb.SheetNames.join(" / ");
+      const sheetList = sheetNames.join(" / ");
       throw new Error(
         `給料明細のヘッダー行（「源氏名」または「名前」+ 時給・総売上等の列）を検出できるシートがありません。` +
           `シート: ${sheetList}。正しいシートか、ヘッダー行の列名をご確認ください。`
@@ -473,4 +475,20 @@ export function parseMonthlyExcel(
     sheets,
     warnings,
   };
+}
+
+/**
+ * ExcelのArrayBufferをパースする（同期版）。
+ * @param opts.sheetName 指定した場合はそのシートを強制採用（手動選択UI用）
+ *
+ * キャンセル対応が必要な画面からは analyzeExcel.ts の
+ * analyzeExcelBuffer（シートごとに中断確認する非同期版）を使用する。
+ */
+export function parseMonthlyExcel(
+  buffer: ArrayBuffer,
+  opts?: { sheetName?: string }
+): ExcelParseResult {
+  const wb = readWorkbook(buffer);
+  const scans = wb.SheetNames.map((name) => scanSheet(wb, name));
+  return assembleParseResult(scans, wb.SheetNames, opts);
 }

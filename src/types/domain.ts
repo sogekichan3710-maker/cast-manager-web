@@ -335,8 +335,19 @@ export function fmtDiff(v: number | null): string {
   return s + Math.abs(Math.round(v)).toLocaleString("ja-JP");
 }
 
-/** インポート/移行の実行状態 */
-export const RUN_STATUSES = ["processing", "completed", "failed", "cancelled"] as const;
+/**
+ * インポート/移行の実行状態。
+ * - cancelled: 1件も保存せずにキャンセル
+ * - partial-cancelled: 一部保存済みでキャンセル（変更記録あり・ロールバック可）
+ * いずれの場合も completed にはしない。
+ */
+export const RUN_STATUSES = [
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+  "partial-cancelled",
+] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /** ロールバック状態 */

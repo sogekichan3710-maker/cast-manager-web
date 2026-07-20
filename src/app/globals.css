@@ -643,7 +643,13 @@ textarea.form-input {
 
 /* ---------- PR3.5: ダッシュボード ---------- */
 .stats-grid-dash {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* カード7枚構成（PR4で項目整理）。auto-fitで余白を作らず均等に埋める */
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+@media (max-width: 560px) {
+  .stats-grid-dash {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 .stat-sub {
   font-size: 10px;
@@ -785,4 +791,43 @@ textarea.form-input {
 .progress-note {
   font-size: 13px;
   margin-top: 8px;
+}
+
+/* ===== PR4追加: インポート操作性改善 ===== */
+.analyze-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg3);
+  font-size: 13px;
+}
+.plan-summary-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.bulk-bar .form-input {
+  width: auto;
 }

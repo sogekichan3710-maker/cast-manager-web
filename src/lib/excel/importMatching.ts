@@ -152,6 +152,11 @@ export function matchExcelRows(
       }
       // 完全一致1件・時給同一・在籍のみ自動確定候補
       needsConfirm = !(suggestedAction === "link" && statusConfirm === null);
+      // 同名がアーカイブ済み側にも存在する場合は自動確定しない（同名重複）
+      if (exactInStore.length > 1) {
+        sameNameConfirm = true;
+        needsConfirm = true;
+      }
     } else if (multipleSameName) {
       // 確認フロー2: 同名キャスト候補（自動で統合しない）
       suggestedAction = "link";

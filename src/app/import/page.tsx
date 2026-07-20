@@ -15,19 +15,30 @@ import {
   type RowDecision,
   type StatusDecision,
 } from "@/services/excelImportService";
-import { parseMonthlyExcel, type ExcelParseResult } from "@/lib/excel/parseMonthlyExcel";
+import type { ExcelParseResult } from "@/lib/excel/parseMonthlyExcel";
 import {
-  matchExcelRows,
-  type MatchResult,
-  type RowAction,
-  type MatchableCast,
-} from "@/lib/excel/importMatching";
+  AnalyzeCancelledError,
+  analyzeExcelBuffer,
+  analyzeExcelFile,
+  matchExcelRowsChunked,
+  type AnalyzeProgress,
+} from "@/lib/excel/analyzeExcel";
+import type { MatchResult, RowAction, MatchableCast } from "@/lib/excel/importMatching";
 import {
+  BULK_NEW_WARN_COUNT,
+  ROW_FILTERS,
   buildInitialRowStates,
+  bulkClearSelection,
+  bulkExcludeRows,
+  bulkLinkExactRows,
+  bulkNewNoCandidateRows,
   canExecutePlan,
+  listBulkNewEligible,
   recomputeExisting,
+  rowMatchesFilter,
   summarizePlan,
   type PlanRowState,
+  type RowFilterId,
 } from "@/lib/excel/importPlan";
 import {
   currentMonth,
@@ -39,13 +50,18 @@ import {
 
 /**
  * Excelインポート（owner / 許可されたadmin）。
- * 店舗・月・ファイル選択 → シート/範囲確認 → 照合確認（時給変更 / 同名 /
- * 在籍状態の3種確認）→ 最終確認画面 → 実行 → 結果表示。
  *
- * 安全対策:
- * - 要確認行の初期状態は「未選択」。すべて解決するまで実行不可
- * - 自動で新規キャスト登録しない（ルールで確定済みの場合のみ自動提案）
- * - 実行前に最終確認画面（新規/更新/時給変更/除外/要確認の件数）を必ず表示
+ * 60名規模でも運用できるよう、明らかに一致している行は「自動確定済み」とし、
+ * 本当に確認が必要な行（要確認）だけを人が処理する方式。
+ *
+ * - 解析（読込/シート解析/ヘッダー判定/データ抽出/キャスト照合）は
+ *   AbortControllerでキャンセル可能。キャンセル後は初期画面へ戻り、
+ *   途中結果をUI・照合・Firestoreへ一切反映しない
+ * - Firestore保存中のキャンセルは別系統（cancelRef）。未処理行は保存せず、
+ *   保存済み変更は必ず importBatches.changes へ記録され、
+ *   status は cancelled / partial-cancelled（completedにしない）
+ * - 一括操作（完全一致のみ紐付け / 候補なしのみ新規登録 / 除外 / 選択解除）と
+ *   絞り込みで要確認行だけを処理できる
  */
 
 interface RowState extends PlanRowState {
@@ -65,24 +81,34 @@ export default function ImportPage() {
   const [pageError, setPageError] = useState<string | null>(null);
   const fileBufferRef = useRef<ArrayBuffer | null>(null);
 
+  // 解析（読込〜照合）のキャンセル系
+  const [analyzing, setAnalyzing] = useState(false);
+  const [matching, setMatching] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState<AnalyzeProgress | null>(null);
+  const [analyzeCancelRequested, setAnalyzeCancelRequested] = useState(false);
+  const analyzeControllerRef = useRef<AbortController | null>(null);
+
   const [casts, setCasts] = useState<CastWithId[]>([]);
   const [rowStates, setRowStates] = useState<RowState[]>([]);
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
   const [existingMap, setExistingMap] = useState<Map<string, MonthlyResultWithId>>(new Map());
   const [statusChoices, setStatusChoices] = useState<Map<string, string>>(new Map());
-  const [preparing, setPreparing] = useState(false);
+  const [filter, setFilter] = useState<RowFilterId>("all");
 
+  const [bulkNewOpen, setBulkNewOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // Firestore保存のキャンセル系（解析キャンセルとは別系統）
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [saveCancelRequested, setSaveCancelRequested] = useState(false);
   const cancelRef = useRef(false);
 
   useEffect(() => {
     if (userDoc && !canImport) router.replace("/dashboard");
   }, [userDoc, canImport, router]);
 
-  // 照合用に閲覧可能全店舗のキャストを購読（他店舗同名の検出に使用）
   const storeIds = useMemo(() => accessibleStores.map((s) => s.id), [accessibleStores]);
   useEffect(() => {
     if (storeIds.length === 0) return;
@@ -93,60 +119,131 @@ export default function ImportPage() {
   const existingCastIds = useMemo(() => new Set(existingMap.keys()), [existingMap]);
   const summary = useMemo(() => summarizePlan(rowStates), [rowStates]);
   const executable = canExecutePlan(rowStates);
+  const visibleIndices = useMemo(
+    () =>
+      rowStates
+        .map((st, i) => (rowMatchesFilter(st, filter) ? i : -1))
+        .filter((i) => i >= 0),
+    [rowStates, filter]
+  );
+  const busy = analyzing || matching || running;
+  const bulkNewEligible = useMemo(() => listBulkNewEligible(rowStates), [rowStates]);
 
   if (!canImport) return null;
 
-  function resetPreview() {
+  /** キャンセル後・ファイル再選択時: ファイル選択前の初期画面へ完全に戻す */
+  function resetToInitial() {
+    setFileName("");
+    fileBufferRef.current = null;
+    setParseResult(null);
     setMatchResult(null);
     setRowStates([]);
+    setStatusChoices(new Map());
+    setFilter("all");
     setResult(null);
+    setProgress(null);
     setConfirmOpen(false);
+    setBulkNewOpen(false);
+    setAnalyzeProgress(null);
+    setAnalyzeCancelRequested(false);
+    setPageError(null);
   }
 
-  function parseBuffer(buffer: ArrayBuffer, sheetName?: string) {
-    setPageError(null);
-    setParseResult(null);
-    resetPreview();
+  function resetPreviewOnly() {
+    setMatchResult(null);
+    setRowStates([]);
+    setStatusChoices(new Map());
+    setFilter("all");
+    setResult(null);
+    setConfirmOpen(false);
+    setBulkNewOpen(false);
+  }
+
+  async function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 同じファイルの再選択を許可
+    if (!file) return;
+    if (busy) return; // 二重読込防止
+    resetToInitial();
+    setFileName(file.name);
+    const controller = new AbortController();
+    analyzeControllerRef.current = controller;
+    setAnalyzing(true);
+    setAnalyzeCancelRequested(false);
     try {
-      setParseResult(parseMonthlyExcel(buffer, sheetName ? { sheetName } : undefined));
+      const { buffer, result: res } = await analyzeExcelFile(file, {
+        signal: controller.signal,
+        onProgress: setAnalyzeProgress,
+      });
+      fileBufferRef.current = buffer;
+      setParseResult(res);
+      setAnalyzeProgress(null);
     } catch (err) {
-      setPageError((err as Error).message);
+      if (err instanceof AnalyzeCancelledError) {
+        resetToInitial(); // 途中結果を残さず初期画面へ（成功表示も出さない）
+      } else {
+        const msg = (err as Error).message;
+        resetToInitial();
+        setFileName(file.name);
+        setPageError(msg);
+      }
+    } finally {
+      setAnalyzing(false);
+      analyzeControllerRef.current = null;
     }
   }
 
-  function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    setFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      fileBufferRef.current = reader.result as ArrayBuffer;
-      parseBuffer(fileBufferRef.current);
-    };
-    reader.onerror = () => setPageError("ファイルの読み込みに失敗しました");
-    reader.readAsArrayBuffer(file);
+  async function onSelectSheet(sheetName: string) {
+    if (!fileBufferRef.current || busy) return;
+    resetPreviewOnly();
+    setParseResult(null);
+    const controller = new AbortController();
+    analyzeControllerRef.current = controller;
+    setAnalyzing(true);
+    setAnalyzeCancelRequested(false);
+    try {
+      const res = await analyzeExcelBuffer(fileBufferRef.current, {
+        signal: controller.signal,
+        sheetName,
+        onProgress: setAnalyzeProgress,
+      });
+      setParseResult(res);
+      setAnalyzeProgress(null);
+    } catch (err) {
+      if (err instanceof AnalyzeCancelledError) {
+        resetToInitial();
+      } else {
+        setPageError((err as Error).message);
+      }
+    } finally {
+      setAnalyzing(false);
+      analyzeControllerRef.current = null;
+    }
   }
 
-  function onSelectSheet(sheetName: string) {
-    if (!fileBufferRef.current) return;
-    parseBuffer(fileBufferRef.current, sheetName);
+  function onCancelAnalyze() {
+    setAnalyzeCancelRequested(true);
+    analyzeControllerRef.current?.abort();
   }
 
-  /** 照合確認画面を作成する */
+  /** 照合確認画面を作成する（キャンセル可能） */
   async function onBuildPreview() {
-    if (!parseResult || !storeId || !/^\d{4}-\d{2}$/.test(month) || preparing) return;
+    if (!parseResult || !storeId || !/^\d{4}-\d{2}$/.test(month) || busy) return;
     if (parseResult.rows.length === 0) {
       setPageError("キャスト行が0件のため照合できません。シート・ヘッダー行をご確認ください。");
       return;
     }
-    setPreparing(true);
     setPageError(null);
+    const controller = new AbortController();
+    analyzeControllerRef.current = controller;
+    setMatching(true);
+    setAnalyzeCancelRequested(false);
     try {
       const [rules, existing] = await Promise.all([
         fetchRulesByStore(storeId),
         fetchMonthlyResultsByStoreMonth(storeId, month),
       ]);
+      if (controller.signal.aborted) throw new AnalyzeCancelledError();
       const matchable: MatchableCast[] = casts.map((c) => ({
         id: c.id,
         storeId: c.storeId,
@@ -157,7 +254,10 @@ export default function ImportPage() {
         status: c.status,
         archived: c.archived,
       }));
-      const mr = matchExcelRows(parseResult.rows, storeId, matchable, rules);
+      const mr = await matchExcelRowsChunked(parseResult.rows, storeId, matchable, rules, {
+        signal: controller.signal,
+        onProgress: setAnalyzeProgress,
+      });
       const exMap = new Map(existing.map((m) => [m.castId, m]));
       setExistingMap(exMap);
       setMatchResult(mr);
@@ -168,10 +268,16 @@ export default function ImportPage() {
         }))
       );
       setStatusChoices(new Map());
+      setAnalyzeProgress(null);
     } catch (err) {
-      setPageError((err as Error).message);
+      if (err instanceof AnalyzeCancelledError) {
+        resetToInitial(); // 照合中キャンセルも初期画面へ戻す
+      } else {
+        setPageError((err as Error).message);
+      }
     } finally {
-      setPreparing(false);
+      setMatching(false);
+      analyzeControllerRef.current = null;
     }
   }
 
@@ -185,18 +291,35 @@ export default function ImportPage() {
     });
   }
 
+  function applyBulk(fn: (states: RowState[]) => { states: PlanRowState[]; applied: number }) {
+    setRowStates((prev) => {
+      const { states } = fn(prev);
+      return states.map((s, i) => ({ ...s, showDiff: prev[i].showDiff })) as RowState[];
+    });
+  }
+
+  function onJumpToUnresolved() {
+    const first = rowStates.find((st) => st.action === null);
+    if (!first) return;
+    document
+      .getElementById(`import-row-${first.match.row.rowNumber}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFilter("unresolved");
+  }
+
   async function onExecute() {
     if (!firebaseUser || running || !matchResult || !executable) return;
     setConfirmOpen(false);
     setPageError(null);
     cancelRef.current = false;
+    setSaveCancelRequested(false);
     setRunning(true);
     setResult(null);
     setProgress(null);
     try {
       const decisions: RowDecision[] = rowStates.map((r) => ({
         row: r.match.row,
-        action: r.action as RowAction, // executable 判定済み（null無し）
+        action: r.action as RowAction, // executable判定済み（null無し）
         castId: r.action === "new" ? null : r.castId,
         newWage: r.action === "wage-change" ? r.match.row.hourlyWage : null,
         existing: r.existing,
@@ -248,9 +371,9 @@ export default function ImportPage() {
               value={storeId}
               onChange={(e) => {
                 setStoreId(e.target.value);
-                resetPreview();
+                resetPreviewOnly();
               }}
-              disabled={running}
+              disabled={busy}
             >
               <option value="">対象店舗を選択 *</option>
               {accessibleStores.map((s) => (
@@ -263,17 +386,35 @@ export default function ImportPage() {
               value={month}
               onChange={(e) => {
                 setMonth(e.target.value);
-                resetPreview();
+                resetPreviewOnly();
               }}
-              disabled={running}
+              disabled={busy}
             />
             <input
               type="file"
               accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={onFileSelected}
-              disabled={running}
+              onChange={(e) => void onFileSelected(e)}
+              disabled={busy}
             />
           </div>
+
+          {(analyzing || matching) && analyzeProgress && (
+            <div className="analyze-progress">
+              <span>
+                {analyzeProgress.label}
+                {analyzeProgress.current != null && analyzeProgress.total != null && (
+                  <>
+                    {" "}
+                    — {analyzeProgress.current} / {analyzeProgress.total}
+                    （{Math.round((analyzeProgress.current / analyzeProgress.total) * 100)}%）
+                  </>
+                )}
+              </span>
+              <button type="button" className="btn btn-danger btn-sm" onClick={onCancelAnalyze}>
+                {analyzeCancelRequested ? "キャンセル受付済み…" : "キャンセル"}
+              </button>
+            </div>
+          )}
 
           {parseResult && (
             <div style={{ marginTop: 12 }}>
@@ -292,8 +433,8 @@ export default function ImportPage() {
                           className="form-input"
                           style={{ maxWidth: 320, display: "inline-block" }}
                           value={parseResult.sheetName}
-                          onChange={(e) => onSelectSheet(e.target.value)}
-                          disabled={running}
+                          onChange={(e) => void onSelectSheet(e.target.value)}
+                          disabled={busy}
                         >
                           {parseResult.sheets.map((s) => (
                             <option key={s.name} value={s.name}>
@@ -367,11 +508,11 @@ export default function ImportPage() {
             <button
               className="btn btn-primary"
               onClick={() => void onBuildPreview()}
-              disabled={!readyToPreview || preparing || running}
+              disabled={!readyToPreview || busy}
             >
-              {preparing ? "照合中…" : "照合確認へ進む"}
+              {matching ? "照合中…" : "照合確認へ進む"}
             </button>
-            {!readyToPreview && (
+            {!readyToPreview && !analyzing && (
               <span className="page-sub" style={{ marginLeft: 10 }}>
                 対象店舗・対象月・Excelファイルをすべて選択してください
               </span>
@@ -383,31 +524,112 @@ export default function ImportPage() {
           <>
             <section className="section-card" style={{ marginBottom: 16 }}>
               <h2 style={{ marginBottom: 4 }}>2. 照合確認</h2>
-              <p className="page-sub" style={{ marginBottom: 12 }}>
-                {storeName(storeId)} / {monthToJa(month)} ―
-                未選択（要確認） {summary.unresolved}件 ／
-                時給変更候補 {rowStates.filter((r) => r.match.wageChange).length}件 ／
-                同名候補 {rowStates.filter((r) => r.match.sameNameConfirm).length}件 ／
-                在籍状態確認 {rowStates.filter((r) => r.match.statusConfirm).length}件
+              <p className="page-sub" style={{ marginBottom: 10 }}>
+                {storeName(storeId)} / {monthToJa(month)} — 自動確定済みの行はそのまま実行対象に
+                含まれます。未選択（要確認）の行だけ選択してください。
               </p>
-              {summary.unresolved > 0 && (
-                <div className="info-box" style={{ marginBottom: 12 }}>
-                  「未選択」の行がすべて解決されるまでインポートは実行できません。
-                  各行で紐付け・新規登録・時給変更・除外のいずれかを選択してください。
-                </div>
-              )}
 
-              {rowStates.map((rs, idx) => (
-                <RowCard
-                  key={rs.match.row.rowNumber}
-                  rs={rs}
-                  existingMap={existingMap}
-                  storeName={storeName}
-                  targetStoreId={storeId}
-                  onChange={(patch) => updateRow(idx, patch)}
+              {/* 集計バー + 未選択への導線（sticky） */}
+              <div className="plan-summary-bar">
+                <span className="badge badge-green">自動確定 {summary.autoConfirmed}</span>
+                <span className="badge badge-orange">要確認 {summary.needsConfirm}</span>
+                <span className={`badge ${summary.unresolved > 0 ? "badge-red" : "badge-gray"}`}>
+                  未選択 {summary.unresolved}
+                </span>
+                <span className="badge badge-gray">新規 {summary.newCasts}</span>
+                <span className="badge badge-gray">紐付け {summary.links}</span>
+                <span className="badge badge-gray">時給変更 {summary.wageChanges}</span>
+                <span className="badge badge-gray">除外 {summary.excluded}</span>
+                {summary.unresolved > 0 && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={onJumpToUnresolved}>
+                    ↓ 未選択行へ移動
+                  </button>
+                )}
+              </div>
+
+              {/* 絞り込み + 一括操作 */}
+              <div className="bulk-bar">
+                <select
+                  className="form-input"
+                  style={{ maxWidth: 220 }}
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value as RowFilterId)}
                   disabled={running}
-                />
-              ))}
+                  aria-label="絞り込み"
+                >
+                  {ROW_FILTERS.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      絞り込み: {f.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running}
+                  onClick={() => applyBulk(bulkLinkExactRows)}
+                >
+                  完全一致のみ一括紐付け
+                </button>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running || bulkNewEligible.length === 0}
+                  onClick={() => setBulkNewOpen(true)}
+                >
+                  候補なしのみ一括新規登録（{bulkNewEligible.length}件）
+                </button>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running}
+                  onClick={() => applyBulk((s) => bulkExcludeRows(s, new Set(visibleIndices)))}
+                >
+                  表示中のみ一括除外
+                </button>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running}
+                  onClick={() => applyBulk((s) => bulkExcludeRows(s))}
+                >
+                  全件を除外
+                </button>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running}
+                  onClick={() => applyBulk((s) => bulkClearSelection(s, new Set(visibleIndices)))}
+                >
+                  表示中の選択を解除
+                </button>
+                <button
+                  type="button"
+                  className="choice-btn"
+                  disabled={running}
+                  onClick={() => applyBulk((s) => bulkClearSelection(s))}
+                >
+                  選択をすべて解除
+                </button>
+              </div>
+
+              {visibleIndices.length === 0 ? (
+                <p className="empty-note" style={{ padding: 12 }}>
+                  この絞り込みに該当する行はありません
+                </p>
+              ) : (
+                visibleIndices.map((idx) => (
+                  <RowCard
+                    key={rowStates[idx].match.row.rowNumber}
+                    rs={rowStates[idx]}
+                    existingMap={existingMap}
+                    storeName={storeName}
+                    targetStoreId={storeId}
+                    onChange={(patch) => updateRow(idx, patch)}
+                    disabled={running}
+                  />
+                ))
+              )}
             </section>
 
             {matchResult.missingCasts.length > 0 && (
@@ -453,29 +675,38 @@ export default function ImportPage() {
 
             <section className="section-card" style={{ marginBottom: 16 }}>
               <h2 style={{ marginBottom: 10 }}>4. インポートを実行</h2>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <button
                   className="btn btn-primary"
                   onClick={() => setConfirmOpen(true)}
                   disabled={running || !executable}
                 >
-                  {running ? "インポート中…" : "最終確認へ"}
+                  {running ? "保存中…" : "最終確認へ（段階6/8）"}
                 </button>
                 {!executable && !running && (
-                  <span className="page-sub" style={{ alignSelf: "center" }}>
+                  <span className="page-sub">
                     未選択の行が {summary.unresolved} 件あるため実行できません
                   </span>
                 )}
                 {running && (
-                  <button className="btn btn-ghost" onClick={() => { cancelRef.current = true; }}>
-                    キャンセル（現在の行の処理後に停止）
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => {
+                      cancelRef.current = true;
+                      setSaveCancelRequested(true);
+                    }}
+                  >
+                    {saveCancelRequested ? "キャンセル受付済み…" : "キャンセル（未処理行は保存しない）"}
                   </button>
                 )}
               </div>
-              {progress && (
+              {running && progress && (
                 <p className="progress-note">
-                  処理中… {progress.done} / {progress.total} 行
-                  （作成 {progress.created} / 上書き {progress.updated} / スキップ {progress.skipped} / エラー {progress.errors}）
+                  段階7/8 Firestore保存 — {progress.done} / {progress.total} 件
+                  （{progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}%）
+                  ／ 作成 {progress.created} / 上書き {progress.updated} / スキップ {progress.skipped} /
+                  エラー {progress.errors} ／ 保存済み変更 {progress.savedChanges}件
+                  {saveCancelRequested && " ／ キャンセル要求受付済み — 現在の行の処理後に停止します"}
                 </p>
               )}
               {result && (
@@ -484,13 +715,17 @@ export default function ImportPage() {
                   style={{ marginTop: 12 }}
                 >
                   <strong>
-                    {result.status === "completed" && result.errors === 0 && "インポートが完了しました"}
+                    {result.status === "completed" && result.errors === 0 && "段階8/8 インポートが完了しました"}
                     {result.status === "completed" && result.errors > 0 && "インポートは完了しましたが一部エラーがあります"}
-                    {result.status === "cancelled" && "インポートを中断しました"}
+                    {result.status === "cancelled" &&
+                      "インポートをキャンセルしました（保存された変更はありません）"}
+                    {result.status === "partial-cancelled" &&
+                      "インポートをキャンセルしました（一部保存済み — 履歴からロールバックできます）"}
                     {result.status === "failed" && "インポートに失敗しました"}
                   </strong>
                   <p style={{ marginTop: 6 }}>
-                    作成 {result.created} / 上書き {result.updated} / スキップ {result.skipped} / エラー {result.errors}
+                    成功（作成+上書き） {result.created + result.updated} ／ 保存済み変更 {result.savedChanges}件
+                    ／ スキップ {result.skipped} ／ エラー {result.errors} ／ 未処理 {result.unprocessed}件
                   </p>
                   <p className="page-sub" style={{ marginTop: 4 }}>
                     このインポートは「インポート履歴」からBatch単位でロールバックできます。
@@ -505,47 +740,212 @@ export default function ImportPage() {
         )}
       </main>
 
-      {confirmOpen && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card" style={{ maxWidth: 480 }}>
-            <div className="modal-head">
-              <h2>インポート実行前の最終確認</h2>
-              <button className="btn btn-ghost btn-sm" onClick={() => setConfirmOpen(false)}>
-                ✕ 閉じる
-              </button>
-            </div>
-            <p className="page-sub" style={{ marginBottom: 10 }}>
-              {storeName(storeId)} / {monthToJa(month)} / {fileName}
-            </p>
-            <div className="table-wrap">
-              <table className="data-table">
-                <tbody>
-                  <tr><td>新規キャスト登録</td><td className="num">{summary.newCasts}件</td></tr>
-                  <tr><td>既存キャストへ紐付け</td><td className="num">{summary.links}件</td></tr>
-                  <tr><td>時給変更として処理</td><td className="num">{summary.wageChanges}件</td></tr>
-                  <tr><td>既存成績の上書き</td><td className="num">{summary.overwrite}件</td></tr>
-                  <tr><td>既存ありスキップ</td><td className="num">{summary.skipExisting}件</td></tr>
-                  <tr><td>インポート対象から除外</td><td className="num">{summary.excluded}件</td></tr>
-                  <tr><td>未選択（要確認）</td><td className="num">{summary.unresolved}件</td></tr>
-                  <tr><td>在籍状態の変更</td><td className="num">{statusChoices.size}件</td></tr>
-                </tbody>
-              </table>
-            </div>
-            <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => setConfirmOpen(false)}>
-                キャンセル
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => void onExecute()}
-                disabled={!executable || running}
-              >
-                実行
-              </button>
-            </div>
-          </div>
-        </div>
+      {bulkNewOpen && (
+        <BulkNewModal
+          eligible={bulkNewEligible}
+          summaryExcluded={summary.excluded}
+          summaryNeedsConfirm={summary.needsConfirm}
+          storeName={storeName(storeId)}
+          month={month}
+          onApply={() => {
+            applyBulk(bulkNewNoCandidateRows);
+            setBulkNewOpen(false);
+          }}
+          onClose={() => setBulkNewOpen(false)}
+        />
       )}
+
+      {confirmOpen && parseResult && (
+        <FinalConfirmModal
+          storeName={storeName(storeId)}
+          month={month}
+          fileName={fileName}
+          sheetName={parseResult.sheetName}
+          detectedRows={parseResult.rows.length}
+          summary={summary}
+          statusChangeCount={statusChoices.size}
+          executable={executable}
+          running={running}
+          onExecute={() => void onExecute()}
+          onClose={() => setConfirmOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 候補なし一括新規登録の確認画面 */
+function BulkNewModal({
+  eligible,
+  summaryExcluded,
+  summaryNeedsConfirm,
+  storeName,
+  month,
+  onApply,
+  onClose,
+}: {
+  eligible: PlanRowState[];
+  summaryExcluded: number;
+  summaryNeedsConfirm: number;
+  storeName: string;
+  month: string;
+  onApply: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="modal-card" style={{ maxWidth: 560 }}>
+        <div className="modal-head">
+          <h2>候補なしの一括新規登録 — 確認</h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕ 閉じる</button>
+        </div>
+        <p className="page-sub" style={{ marginBottom: 10 }}>
+          {storeName} / {monthToJa(month)} へ、既存キャストに候補が1件も無い行を
+          新規キャストとして登録します（空欄・数値のみ・集計項目・候補ありの行は対象外）。
+        </p>
+        {eligible.length >= BULK_NEW_WARN_COUNT && (
+          <div className="error-box" style={{ marginBottom: 10 }}>
+            ⚠ 新規登録が{eligible.length}件と多くなっています。誤ったシートや店舗を
+            読み込んでいないか、キャスト名一覧を確認してから実行してください。
+          </div>
+        )}
+        <div className="table-wrap" style={{ maxHeight: 300, overflowY: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr><th>行</th><th>キャスト名</th><th className="num">Excel時給</th></tr>
+            </thead>
+            <tbody>
+              {eligible.map((st) => (
+                <tr key={st.match.row.rowNumber}>
+                  <td>{st.match.row.rowNumber}</td>
+                  <td>{st.match.row.name}</td>
+                  <td className="num">
+                    {st.match.row.hourlyWage != null
+                      ? `¥${st.match.row.hourlyWage.toLocaleString()}`
+                      : "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="page-sub" style={{ marginTop: 10 }}>
+          新規登録予定 {eligible.length}件 ／ 除外済み {summaryExcluded}件 ／
+          要確認 {summaryNeedsConfirm}件。作成されたデータは importBatches.changes に
+          記録され、Batch単位でロールバックできます。
+        </p>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose}>キャンセル</button>
+          <button className="btn btn-primary" onClick={onApply}>
+            {eligible.length}件を新規登録に設定
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 実行前の最終確認画面（段階6/8） */
+function FinalConfirmModal({
+  storeName,
+  month,
+  fileName,
+  sheetName,
+  detectedRows,
+  summary,
+  statusChangeCount,
+  executable,
+  running,
+  onExecute,
+  onClose,
+}: {
+  storeName: string;
+  month: string;
+  fileName: string;
+  sheetName: string;
+  detectedRows: number;
+  summary: ReturnType<typeof summarizePlan>;
+  statusChangeCount: number;
+  executable: boolean;
+  running: boolean;
+  onExecute: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true">
+      <div className="modal-card" style={{ maxWidth: 520 }}>
+        <div className="modal-head">
+          <h2>最終確認（段階6/8）</h2>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={running}>
+            ✕ 閉じる
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <tbody>
+              <tr><td>対象店舗</td><td>{storeName}</td></tr>
+              <tr><td>対象月</td><td>{monthToJa(month)}</td></tr>
+              <tr><td>ファイル</td><td style={{ wordBreak: "break-all" }}>{fileName}</td></tr>
+              <tr><td>採用シート</td><td>{sheetName}</td></tr>
+              <tr><td>検出キャスト数</td><td className="num">{detectedRows}件</td></tr>
+              <tr><td>自動確定</td><td className="num">{summary.autoConfirmed}件</td></tr>
+              <tr><td>新規キャスト登録</td><td className="num">{summary.newCasts}件</td></tr>
+              <tr><td>既存キャストへ紐付け</td><td className="num">{summary.links}件</td></tr>
+              <tr><td>既存成績の上書き</td><td className="num">{summary.overwrite}件</td></tr>
+              <tr><td>時給変更として処理</td><td className="num">{summary.wageChanges}件</td></tr>
+              <tr><td>在籍状態の変更</td><td className="num">{statusChangeCount}件</td></tr>
+              <tr><td>除外</td><td className="num">{summary.excluded}件</td></tr>
+              <tr>
+                <td>未選択</td>
+                <td className="num">
+                  {summary.unresolved > 0 ? (
+                    <span className="badge badge-red">{summary.unresolved}件</span>
+                  ) : (
+                    "0件"
+                  )}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="info-box" style={{ marginTop: 10 }}>
+          すべての変更は importBatches.changes に記録され、実行後に
+          「インポート履歴」からBatch単位でロールバックできます。
+        </div>
+        {summary.unresolved > 0 && (
+          <div className="error-box" style={{ marginTop: 10 }}>
+            未選択の行が残っているため実行できません。
+          </div>
+        )}
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onClose} disabled={running}>
+            キャンセル
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={onExecute}
+            disabled={!executable || running || summary.unresolved > 0}
+          >
+            実行（段階7/8 保存開始）
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -565,11 +965,11 @@ function RowCard({
   onChange,
   disabled,
 }: {
-  rs: PlanRowState & { showDiff: boolean };
+  rs: RowState;
   existingMap: Map<string, MonthlyResultWithId>;
   storeName: (id: string) => string;
   targetStoreId: string;
-  onChange: (patch: Partial<PlanRowState & { showDiff: boolean }>) => void;
+  onChange: (patch: Partial<RowState>) => void;
   disabled: boolean;
 }) {
   const { match } = rs;
@@ -581,12 +981,15 @@ function RowCard({
   const linkedCandidate = match.candidates.find((c) => c.cast.id === rs.castId);
 
   return (
-    <div className="import-row-card">
+    <div className="import-row-card" id={`import-row-${row.rowNumber}`}>
       <div className="row-head">
         <div>
           <span className="row-name">行{row.rowNumber}: {row.name}</span>
           {rs.action === null && (
             <span className="badge badge-red" style={{ marginLeft: 8 }}>未選択</span>
+          )}
+          {rs.autoConfirmed && rs.action !== null && (
+            <span className="badge badge-green" style={{ marginLeft: 8 }}>自動確定済み</span>
           )}
           {match.ruleApplied && match.ruleReconfirmReasons.length === 0 && (
             <span className="badge badge-purple" style={{ marginLeft: 8 }}>ルール適用</span>

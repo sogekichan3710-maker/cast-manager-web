@@ -330,7 +330,8 @@ function StatusBadge({ status }: { status: RunStatus }) {
     processing: { cls: "badge-yellow", label: "実行中" },
     completed: { cls: "badge-green", label: "完了" },
     failed: { cls: "badge-red", label: "失敗" },
-    cancelled: { cls: "badge-gray", label: "中断" },
+    cancelled: { cls: "badge-gray", label: "キャンセル" },
+    "partial-cancelled": { cls: "badge-orange", label: "一部保存で中断" },
   };
   const m = map[status] ?? { cls: "badge-gray", label: status };
   return <span className={`badge ${m.cls}`}>{m.label}</span>;

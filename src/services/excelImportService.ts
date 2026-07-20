@@ -58,6 +58,8 @@ export interface ImportProgress {
   updated: number;
   skipped: number;
   errors: number;
+  /** 保存済みの変更件数（importBatches.changesへ記録される数） */
+  savedChanges: number;
 }
 
 export interface ImportResult {
@@ -67,7 +69,22 @@ export interface ImportResult {
   updated: number;
   skipped: number;
   errors: number;
+  /** 処理済み件数（行 + 在籍状態変更） */
+  processed: number;
+  /** キャンセル時に未処理のまま残った件数（保存されていない） */
+  unprocessed: number;
+  /** 保存済みの変更件数 */
+  savedChanges: number;
   errorMessages: string[];
+}
+
+/**
+ * キャンセル時の最終ステータス（純関数・テスト可能）。
+ * 1件でも保存済みの変更があれば partial-cancelled、無ければ cancelled。
+ * いずれも completed にはしない。
+ */
+export function finalizeCancelledStatus(savedChanges: number): RunStatus {
+  return savedChanges > 0 ? "partial-cancelled" : "cancelled";
 }
 
 /**
@@ -173,12 +190,21 @@ export async function executeExcelImport(
   const total = decisions.length + statusDecisions.length;
   let done = 0;
 
+  let cancelled = false;
   const report = () =>
-    onProgress({ done, total, created, updated, skipped, errors: errorMessages.length });
+    onProgress({
+      done,
+      total,
+      created,
+      updated,
+      skipped,
+      errors: errorMessages.length,
+      savedChanges: changes.length,
+    });
 
   for (const d of decisions) {
     if (shouldCancel()) {
-      status = "cancelled";
+      cancelled = true;
       break;
     }
     try {
@@ -347,10 +373,10 @@ export async function executeExcelImport(
   }
 
   // 確認フロー3: 在籍状態の変更適用
-  if (status !== "cancelled") {
+  if (!cancelled) {
     for (const s of statusDecisions) {
       if (shouldCancel()) {
-        status = "cancelled";
+        cancelled = true;
         break;
       }
       try {
@@ -386,13 +412,20 @@ export async function executeExcelImport(
     }
   }
 
-  if (errorMessages.length > 0 && status === "completed") {
-    // 一部エラーでも成功分は保存済み。全滅の場合はfailedにする
+  // 最終ステータスの決定:
+  // キャンセル時は保存済み変更の有無で cancelled / partial-cancelled
+  // （completed には決してしない）。エラー全滅時は failed。
+  if (cancelled) {
+    status = finalizeCancelledStatus(changes.length);
+  } else if (errorMessages.length > 0) {
     const attempted = decisions.length;
     if (created + updated + skipped === 0 && attempted > 0) status = "failed";
   }
 
-  const summary = `作成 ${created} / 上書き ${updated} / スキップ ${skipped} / エラー ${errorMessages.length}`;
+  const unprocessed = total - done;
+  const summary =
+    `作成 ${created} / 上書き ${updated} / スキップ ${skipped} / エラー ${errorMessages.length}` +
+    (cancelled ? ` / 未処理 ${unprocessed}（キャンセル）` : "");
   try {
     // changes は中断・失敗時も必ず保存する（部分実行分のロールバックのため）
     await completeImportBatch(
@@ -419,6 +452,9 @@ export async function executeExcelImport(
     updated,
     skipped,
     errors: errorMessages.length,
+    processed: done,
+    unprocessed,
+    savedChanges: changes.length,
     errorMessages,
   };
 }
