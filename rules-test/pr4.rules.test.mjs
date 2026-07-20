@@ -513,9 +513,9 @@ describe("ロールバック: 削除制限", () => {
     await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_import_virgo")));
   });
 
-  it("casts: 手動作成キャスト（importBatchIdなし）はadminでは削除できないがownerは削除できる（PR5完全削除。詳細はpr5.rules.test.mjs）", async () => {
+  it("casts: 手動作成キャスト（importBatchIdなし）はadmin・ownerともクライアントSDKからは削除できない（PR5レビュー対応: 完全削除はdeleteCastPermanently Cloud Function専用。詳細はpr5.rules.test.mjs）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_virgo_1")));
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
   });
 
   it("casts: 許可外店舗のインポート作成キャストは削除できない", async () => {
@@ -530,9 +530,9 @@ describe("ロールバック: 削除制限", () => {
     await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "wageHistory", "wh_import")));
   });
 
-  it("wageHistory: 手動の履歴（sourceなし）はadminでは削除できないがownerは削除できる（PR5完全削除。詳細はpr5.rules.test.mjs）", async () => {
+  it("wageHistory: 手動の履歴（sourceなし）はadmin・ownerともクライアントSDKからは削除できない（PR5レビュー対応: 完全削除はdeleteCastPermanently Cloud Function専用。詳細はpr5.rules.test.mjs）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "wageHistory", "wh_manual")));
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_manual")));
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_manual")));
   });
 
   it("wageHistory: viewerは削除できない", async () => {

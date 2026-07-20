@@ -1,7 +1,8 @@
 /**
  * PR5 Firestore Security Rules テスト
  * （users role/status/accessibleStoreIds のCloud Functions専用化 /
- *   casts完全削除・wageHistory完全削除のowner権限拡張）
+ *   casts・wageHistoryの完全削除はCloud Functions専用・クライアントSDKからは
+ *   owner含め禁止 / auditLogsのaction allowlist）
  *
  * 実行方法: cd rules-test && npm install && npm test
  *
@@ -9,10 +10,14 @@
  *  - users: role/status/accessibleStoreIds/approvedAt/approvedBy/disabledAt
  *    はowner含め誰もクライアントSDKから直接変更できない（Cloud Functions専用）
  *  - users: 本人のdisplayName更新は引き続き可能
- *  - casts: ownerは許可店舗内なら任意のキャストを削除できる（完全削除）。
- *    admin以下はimportBatchId付き以外削除不可（従来どおり）
- *  - wageHistory: ownerは許可店舗内なら任意の履歴を削除できる（完全削除の
- *    一部）。admin以下はsource:excel-import以外削除不可（従来どおり）
+ *  - casts: owner含め誰もクライアントSDKから任意のキャストを削除できない
+ *    （完全削除はdeleteCastPermanently Cloud Function専用）。
+ *    admin以下はimportBatchId付きのExcelロールバックのみ従来どおり削除可
+ *  - wageHistory: 同上（owner含め任意削除不可・source:excel-importの
+ *    ロールバックのみ削除可）
+ *  - auditLogs: クライアントは許可されたaction（業務データ変更系）のみ
+ *    作成可能。ユーザー管理・キャスト完全削除のactionはクライアントから
+ *    作成できない（Cloud Functions専用）。createdAtはサーバー時刻固定
  *  - pending / disabled / usersドキュメント不在は一切アクセス不可
  */
 import { readFileSync } from "node:fs";
@@ -23,7 +28,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc } from "firebase/firestore";
+import { addDoc, collection, doc, getDoc, serverTimestamp, setDoc, updateDoc, deleteDoc } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -230,22 +235,26 @@ describe("users: 重要フィールドの直接変更禁止（PR5）", () => {
   });
 });
 
-// ---------------- casts: 完全削除（owner専用の任意キャスト削除） ----------------
-describe("casts: 完全削除（PR5）", () => {
-  it("ownerは手動作成キャスト（importBatchIdなし）も削除できる", async () => {
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_manual_virgo")));
+// ---------------- casts: 完全削除はCloud Functions専用（PR5レビュー対応） ----------------
+describe("casts: クライアントSDKからの削除禁止（PR5レビュー対応）", () => {
+  it("ownerでも手動作成キャスト（importBatchIdなし）をクライアントSDKから削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_manual_virgo")));
   });
 
-  it("ownerは全店舗のキャストを削除できる（ownerは元々全店舗アクセス権を持つ設計）", async () => {
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_manual_regina")));
+  it("ownerでも全店舗のキャストをクライアントSDKから削除できない（完全削除はdeleteCastPermanently Cloud Function専用）", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_manual_regina")));
   });
 
   it("admin以下は手動作成キャストを削除できない（従来どおり）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_manual_virgo")));
   });
 
-  it("admin以下はimportBatchId付きキャストなら削除できる（ロールバック用途・従来どおり）", async () => {
+  it("admin以下はimportBatchId付きキャストなら削除できる（Excelロールバック用途・従来どおり維持）", async () => {
     await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_import_virgo")));
+  });
+
+  it("ownerもimportBatchId付きキャストならExcelロールバック経路で削除できる（adminOrAboveに含まれるため）", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_import_virgo")));
   });
 
   it("viewerは削除できない", async () => {
@@ -253,26 +262,87 @@ describe("casts: 完全削除（PR5）", () => {
   });
 });
 
-// ---------------- wageHistory: 完全削除（owner専用の任意履歴削除） ----------------
-describe("wageHistory: 完全削除（PR5）", () => {
-  it("ownerは手動の時給履歴（sourceなし）も削除できる", async () => {
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_manual")));
+// ---------------- wageHistory: 完全削除はCloud Functions専用（PR5レビュー対応） ----------------
+describe("wageHistory: クライアントSDKからの削除禁止（PR5レビュー対応）", () => {
+  it("ownerでも手動の時給履歴（sourceなし）をクライアントSDKから削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_manual")));
   });
 
-  it("ownerは移行由来の時給履歴（source: migration）も削除できる", async () => {
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_migration")));
+  it("ownerでも移行由来の時給履歴（source: migration）をクライアントSDKから削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_migration")));
   });
 
   it("admin以下は手動の時給履歴を削除できない（従来どおり）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "wageHistory", "wh_manual")));
   });
 
-  it("admin以下はExcelインポート由来の履歴なら削除できる（ロールバック用途・従来どおり）", async () => {
+  it("admin以下はExcelインポート由来の履歴なら削除できる（ロールバック用途・従来どおり維持）", async () => {
     await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "wageHistory", "wh_import")));
   });
 
   it("viewerは削除できない", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.viewerV), "wageHistory", "wh_manual")));
+  });
+});
+
+// ---------------- auditLogs: クライアント作成のaction allowlist（PR5レビュー対応） ----------------
+describe("auditLogs: クライアント作成の制限（PR5レビュー対応）", () => {
+  function validClientLog(uid, action) {
+    return {
+      userId: uid,
+      userName: "テストユーザー",
+      action,
+      collection: "casts",
+      documentId: "cast_manual_virgo",
+      storeId: STORE_VIRGO,
+      before: null,
+      after: null,
+      createdAt: serverTimestamp(),
+    };
+  }
+
+  it("業務データ変更系のactionは承認済みユーザーが作成できる", async () => {
+    await assertSucceeds(
+      addDoc(collection(dbAs(UIDS.adminV), "auditLogs"), validClientLog(UIDS.adminV, "cast.update"))
+    );
+  });
+
+  it("user.approve 等のユーザー管理系actionはクライアントから作成できない（Cloud Functions専用）", async () => {
+    await assertFails(
+      addDoc(collection(dbAs(UIDS.owner), "auditLogs"), validClientLog(UIDS.owner, "user.approve"))
+    );
+  });
+
+  it("cast.deletePermanent はクライアントから作成できない（Cloud Functions専用）", async () => {
+    await assertFails(
+      addDoc(collection(dbAs(UIDS.owner), "auditLogs"), validClientLog(UIDS.owner, "cast.deletePermanent"))
+    );
+  });
+
+  it("allowlistにない任意のactionは作成できない", async () => {
+    await assertFails(
+      addDoc(collection(dbAs(UIDS.adminV), "auditLogs"), validClientLog(UIDS.adminV, "something.else"))
+    );
+  });
+
+  it("userIdを他人のuidに偽装すると作成できない", async () => {
+    await assertFails(
+      addDoc(
+        collection(dbAs(UIDS.adminV), "auditLogs"),
+        validClientLog(UIDS.owner, "cast.update")
+      )
+    );
+  });
+
+  it("createdAtにサーバー時刻以外（クライアント指定の日時）を使うと作成できない", async () => {
+    const log = validClientLog(UIDS.adminV, "cast.update");
+    await assertFails(
+      addDoc(collection(dbAs(UIDS.adminV), "auditLogs"), { ...log, createdAt: new Date() })
+    );
+  });
+
+  it("owner以外はauditLogsを読めない", async () => {
+    await assertFails(getDoc(doc(dbAs(UIDS.adminV), "auditLogs", "any-id")));
   });
 });
 

@@ -93,14 +93,18 @@
   すべて「誰が・いつ・何を・どの店舗で・変更前・変更後」を記録する。
   業務データの変更は同一トランザクション/バッチでログを書き込み、
   変更とログの原子性を保つ（ログだけ欠落することがない）
-- **owner専用キャスト完全削除** — `src/services/castDeleteService.ts`。
-  削除前に月別成績/面談/目標/モチベーション/時給履歴/nameMatchingRules
-  （リンク解除件数）/importBatch参照の件数をプレビュー表示し、
-  源氏名の入力確認後にのみ実行。関連コレクションを先に全削除してから
-  キャスト本体を削除し、孤立データを残さない（大量データは400件単位で
-  バッチ分割）。Firestore Rulesもowner専用に緩和（`casts` / `wageHistory`
-  の無条件削除をownerに許可。admin以下は従来どおりimportBatchId付き/
-  source:excel-importのみ）
+- **owner専用キャスト完全削除** — プレビュー（`src/services/castDeleteService.ts`
+  の `previewCastDeletion`）は月別成績/面談/目標/モチベーション/
+  時給履歴/nameMatchingRules（リンク解除件数）/importBatch参照の件数を
+  読み取り専用で集計してクライアントに表示し、源氏名の入力確認後にのみ
+  削除を実行する。実際の削除は `functions/src/index.ts` の
+  `deleteCastPermanently`（owner専用Callable Function・レビュー対応で
+  Cloud Functions化）が担当し、関連コレクションを先に全削除してから
+  キャスト本体を削除して孤立データを残さない（大量データは400件単位で
+  バッチ分割）。Firestore Rulesは逆に**owner含め全クライアントSDKから
+  `casts` / `wageHistory` の任意削除を禁止**し、削除はCloud Functions
+  経由のみに限定した（admin以下は従来どおりimportBatchId付き/
+  source:excel-importのExcelロールバック削除のみ）
 - **ユーザー管理のCloud Functions化** — 上記「権限変更処理は
   Cloud Functionsへ移行済み」の節を参照
 - **毎日/飛び飛びExcel運用対応** — 会社Excelは「その時点までの月累計」を
@@ -197,16 +201,18 @@
 
 ---
 
-## ✅ 権限変更処理はCloud Functionsへ移行済み（PR5）
+## ✅ 権限変更・キャスト完全削除処理はCloud Functionsへ移行済み（PR5）
 
 `src/services/userAdminService.ts` にあるユーザー承認・権限変更・無効化・
-`accessibleStoreIds` 設定は、PR5で `functions/src/index.ts` の
-Callable Cloud Functions（`approveUser` / `changeUserRole` / `disableUser` /
-`enableUser` / `setAccessibleStores`）へ移行しました。
+`accessibleStoreIds` 設定、および `src/services/castDeleteService.ts` の
+キャスト完全削除は、`functions/src/index.ts` の Callable Cloud Functions
+（`approveUser` / `changeUserRole` / `disableUser` / `enableUser` /
+`setAccessibleStores` / `deleteCastPermanently`）へ移行済みです。
 
 - Firestore Rules 側も `users.role / status / accessibleStoreIds / approvedAt /
-  approvedBy / disabledAt` をクライアントSDKから直接変更できないよう制限し、
-  これらの変更は必ずCloud Functions経由になります（Admin SDKはRulesを
+  approvedBy / disabledAt` と `casts` の削除（Excelロールバック用の限定削除を
+  除く）をクライアントSDKから直接変更・実行できないよう制限しており、
+  これらの操作は必ずCloud Functions経由になります（Admin SDKはRulesを
   バイパスするため矛盾しません）
 - 「最後の承認済みownerの降格・無効化禁止」は、Cloud Functions内の
   Firestoreトランザクションで承認済みowner数を**その場でクエリして判定**する
@@ -214,17 +220,56 @@ Callable Cloud Functions（`approveUser` / `changeUserRole` / `disableUser` /
   依存しない厳密な保証）
 - 自分自身を無効化する場合は `confirmSelf: true` が必須（`disableUser`
   Function）。未指定で自己無効化しようとすると `failed-precondition` で拒否
-- 判定ロジックは `functions/src/lastOwnerGuard.ts` に純粋関数として分離し、
-  `functions/` 単体のvitestで検証（`npm --prefix functions test`）
+- `setAccessibleStores` は各storeIdの実在・active判定・重複除去・
+  `'__all__'`拒否をサーバー側で行う。空配列（全店舗アクセスの剥奪）を
+  保存する場合は `confirmEmpty: true` が必須
+- `deleteCastPermanently` はキャストと関連データ（月別成績・面談・目標・
+  モチベーション・時給履歴）の削除、nameMatchingRulesのリンク解除、
+  キャスト本体削除、監査ログ記録を1つのFunction呼び出しで行う。
+  途中で失敗しても、同じcastIdで再実行すれば残っているデータだけを
+  処理して安全に完了できる（詳細は関数内コメント参照）
+- 監査ログの`actorName`は、すべてのFunctionでクライアントの入力を使わず
+  呼び出し元自身の`users/{uid}`ドキュメントからサーバー側で取得する
+  （クライアントが任意の名前を偽装できない）
+- 判定ロジックは `functions/src/lastOwnerGuard.ts` /
+  `functions/src/castDeleteGuard.ts` / `functions/src/storeAccessGuard.ts` に
+  純粋関数として分離し、`functions/` 単体のvitestで検証
+  （`npm --prefix functions test`）
 
-デプロイ手順:
+### ⚠️ デプロイ順序（重要・必ずこの順序で行うこと）
 
-```bash
-cd functions
-npm install
-npm run build
-firebase deploy --only functions
-```
+新しいFirestore Rulesは、ユーザー管理系フィールド（role/status/
+accessibleStoreIds等）とcastsの任意削除をクライアントSDKから**全面的に
+拒否**し、Cloud Functions（Admin SDK）経由でのみ変更できる設計です。
+そのため、**Cloud FunctionsをデプロイするよりRulesを先にデプロイすると、
+Functionsが存在しない間はユーザー承認・権限変更・無効化・店舗設定・
+キャスト完全削除が一切できなくなります**（Rulesが直接書き込みを拒否し、
+かつ代替のFunctionsも呼び出せないため）。必ず以下の順序でデプロイして
+ください。
+
+1. **Cloud Functionsをデプロイする**
+   ```bash
+   cd functions
+   npm install
+   npm run build
+   npm test              # functions/ 単体テストが全て通ることを確認
+   firebase deploy --only functions
+   ```
+2. **Callable Functionsの疎通確認をする**
+   本番（またはステージング）環境で、実際にownerアカウントから
+   `approveUser` 等を1回呼び出し、`unauthenticated` や `functions/not-found`
+   のようなエラーにならず正常応答することを確認する（Firebaseコンソール
+   の Functions ログ、またはアプリの「ユーザー管理」画面から）。
+3. **Firestore Rules と Indexes をデプロイする**
+   ```bash
+   firebase deploy --only firestore:rules,firestore:indexes
+   ```
+4. **ownerによる承認・権限変更・店舗設定の動作確認をする**
+   `/admin/users` 画面から、承認・権限変更・無効化・再有効化・
+   閲覧可能店舗の設定、`/casts/[castId]` からキャスト完全削除
+   （テスト用データで）が正しく動作し、`/admin/audit` に監査ログが
+   記録されることを確認する。
+5. **本番利用を開始する**
 
 エミュレータで動作確認する場合は `npm run emulators`（`functions` も
 `firebase.json` で起動対象に含まれています）。

@@ -1,31 +1,18 @@
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  serverTimestamp,
-  where,
-  writeBatch,
-} from "firebase/firestore";
-import { getDb } from "@/lib/firebase";
-import { writeAuditLog } from "@/services/auditLogService";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import { getDb, getFunctionsInstance } from "@/lib/firebase";
 import type { CastDoc } from "@/types";
 
 /**
- * キャストの完全削除（owner専用・PR5）。
+ * キャストの完全削除（owner専用・PR5レビュー対応でCloud Functions化）。
  *
- * casts のRulesは「importBatchId付き（Excelインポートで作成されたキャスト）」
- * のみ削除を許可しており、手動作成のキャストは削除できない仕組みを
- * PR4から維持している。完全削除はこの制約の外側で、Cloud Functions
- * 相当の管理者操作として扱う必要があるため、本サービスは owner のみが
- * 到達できる画面から呼び出すこと（UI側でも owner 以外は非表示にする）。
- *
- * 関連データ（月別成績・面談・目標・モチベーション・時給履歴・
- * nameMatchingRules・importBatches参照）を先にすべて削除し、
- * 孤立データを残さない。大量データは書き込み上限(500件/バッチ)を
- * 考慮して分割する。
+ * 削除前のプレビュー（関連データ件数の集計）は読み取りのみのため
+ * 引き続きクライアント側で行う。実際の削除は
+ * functions/src/index.ts の deleteCastPermanently（owner専用Callable
+ * Function・Admin SDK）へ完全に移した。複数コレクションにまたがる
+ * 削除を途中失敗時にも安全に再実行できるようにするため、クライアント側の
+ * 逐次Firestore書き込みでは行わない（詳細はdeleteCastPermanently関数の
+ * コメント参照）。
  */
 
 const RELATED_COLLECTIONS = [
@@ -49,7 +36,7 @@ export interface CastDeletionPreview {
   importBatchRefs: number;
 }
 
-/** 削除前に関連データ件数を集計する */
+/** 削除前に関連データ件数を集計する（読み取りのみ・クライアント側） */
 export async function previewCastDeletion(castId: string): Promise<CastDeletionPreview> {
   const db = getDb();
   const castSnap = await getDoc(doc(db, "casts", castId));
@@ -85,73 +72,33 @@ export async function previewCastDeletion(castId: string): Promise<CastDeletionP
   };
 }
 
-const BATCH_SIZE = 400;
-
-async function deleteAllByCastId(db: ReturnType<typeof getDb>, col: string, castId: string): Promise<number> {
-  const snap = await getDocs(query(collection(db, col), where("castId", "==", castId)));
-  const refs = snap.docs.map((d) => d.ref);
-  for (let i = 0; i < refs.length; i += BATCH_SIZE) {
-    const batch = writeBatch(db);
-    for (const ref of refs.slice(i, i + BATCH_SIZE)) batch.delete(ref);
-    await batch.commit();
-  }
-  return refs.length;
+export interface CastDeletionResult {
+  /** true の場合、以前の呼び出しで既に完全削除が完了済みだった（冪等な再実行） */
+  alreadyDeleted: boolean;
+  deletedCounts: Record<string, number> | null;
 }
 
 /**
- * キャストと関連データを完全に削除する（owner専用）。
- * 孤立データを残さないため、関連コレクションを先に全削除してから
- * casts本体を削除する。
+ * キャストと関連データを完全に削除する（owner専用・Cloud Functions経由）。
+ * Firestore Rules は owner を含めクライアントSDKからの任意のcasts削除を
+ * 禁止しているため、この呼び出し（Callable Function）だけが完全削除の
+ * 唯一の経路になる。
  */
-export async function deleteCastPermanently(
-  actorUid: string,
-  actorName: string,
-  castId: string
-): Promise<CastDeletionPreview> {
-  const db = getDb();
-  const preview = await previewCastDeletion(castId);
-  const castSnap = await getDoc(doc(db, "casts", castId));
-  if (!castSnap.exists()) throw new Error("キャストが見つかりません");
-  const castData = castSnap.data() as CastDoc;
-
-  for (const col of RELATED_COLLECTIONS) {
-    await deleteAllByCastId(db, col, castId);
+export async function deleteCastPermanently(castId: string): Promise<CastDeletionResult> {
+  try {
+    const fn = httpsCallable(getFunctionsInstance(), "deleteCastPermanently");
+    const res = await fn({ castId });
+    const data = res.data as {
+      ok: boolean;
+      alreadyDeleted?: boolean;
+      deletedCounts?: Record<string, number> | null;
+    };
+    return {
+      alreadyDeleted: Boolean(data.alreadyDeleted),
+      deletedCounts: data.deletedCounts ?? null,
+    };
+  } catch (err) {
+    const e = err as { message?: string };
+    throw new Error(e?.message || "削除に失敗しました");
   }
-
-  // このキャストへリンクしているnameMatchingRulesは無効化（削除ではなく
-  // active:false。ルールの履歴自体は監査のため残す）
-  const ruleSnap = await getDocs(
-    query(collection(db, "nameMatchingRules"), where("linkedCastId", "==", castId))
-  );
-  for (let i = 0; i < ruleSnap.docs.length; i += BATCH_SIZE) {
-    const batch = writeBatch(db);
-    for (const d of ruleSnap.docs.slice(i, i + BATCH_SIZE)) {
-      batch.update(d.ref, {
-        active: false,
-        linkedCastId: null,
-        updatedAt: serverTimestamp(),
-        updatedBy: actorUid,
-      });
-    }
-    await batch.commit();
-  }
-
-  await deleteDoc(doc(db, "casts", castId));
-
-  await writeAuditLog({
-    actorUid,
-    actorName,
-    action: "cast.deletePermanent",
-    collection: "casts",
-    documentId: castId,
-    storeId: castData.storeId,
-    before: {
-      stageName: castData.stageName,
-      storeId: castData.storeId,
-      deletedRelatedCounts: preview,
-    },
-    after: null,
-  });
-
-  return preview;
 }

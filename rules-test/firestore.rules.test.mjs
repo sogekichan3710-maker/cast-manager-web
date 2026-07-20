@@ -28,7 +28,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -568,8 +568,8 @@ describe("PR2/PR5: キャスト完全削除", () => {
   it("adminは手動作成キャストを削除できない（importBatchId付きのみ許可・詳細はpr5.rules.test.mjs）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_virgo_1")));
   });
-  it("ownerは手動作成キャストも削除できる（PR5で完全削除機能として実装。詳細はpr5.rules.test.mjs）", async () => {
-    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
+  it("ownerでも手動作成キャストをクライアントSDKから直接削除できない（PR5レビュー対応: 完全削除はdeleteCastPermanently Cloud Function専用。詳細はpr5.rules.test.mjs）", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
   });
 });
 
@@ -625,21 +625,23 @@ describe("PR3.5: 面談編集の保護", () => {
 });
 
 describe("auditLogs", () => {
-  it("承認済みユーザーは自分のログを追記できる", async () => {
+  // PR5レビュー対応: actionはallowlist制、createdAtはサーバー時刻固定
+  // （詳細な網羅ケースは pr5.rules.test.mjs を参照）
+  it("承認済みユーザーは許可されたactionで自分のログを追記できる", async () => {
     await assertSucceeds(
       setDoc(doc(dbAs(UIDS.adminV), "auditLogs", "log_new"), {
-        userId: UIDS.adminV, userName: "admin", action: "update",
+        userId: UIDS.adminV, userName: "admin", action: "cast.update",
         collection: "casts", documentId: "cast_virgo_1",
-        storeId: STORE_VIRGO, before: {}, after: {}, createdAt: new Date(),
+        storeId: STORE_VIRGO, before: {}, after: {}, createdAt: serverTimestamp(),
       })
     );
   });
   it("他人のuserIdを騙ったログは追記できない", async () => {
     await assertFails(
       setDoc(doc(dbAs(UIDS.adminV), "auditLogs", "log_fake"), {
-        userId: UIDS.owner, userName: "owner", action: "update",
+        userId: UIDS.owner, userName: "owner", action: "cast.update",
         collection: "casts", documentId: "x",
-        storeId: STORE_VIRGO, before: null, after: null, createdAt: new Date(),
+        storeId: STORE_VIRGO, before: null, after: null, createdAt: serverTimestamp(),
       })
     );
   });

@@ -386,8 +386,6 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
       {deleteModalOpen && firebaseUser && (
         <CastDeleteModal
           cast={cast}
-          actorUid={firebaseUser.uid}
-          actorName={userDoc?.displayName ?? ""}
           onClose={() => setDeleteModalOpen(false)}
           onDeleted={() => router.push("/casts")}
         />
@@ -400,17 +398,14 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
  * キャスト完全削除モーダル（オーナー専用）。
  * 削除前に関連データ件数（月別成績・面談・目標・モチベーション・
  * 時給履歴・nameMatchingRules）を必ず表示し、確認後にのみ削除する。
+ * 実際の削除はowner専用Cloud Function（deleteCastPermanently）が行う。
  */
 function CastDeleteModal({
   cast,
-  actorUid,
-  actorName,
   onClose,
   onDeleted,
 }: {
   cast: CastWithId;
-  actorUid: string;
-  actorName: string;
   onClose: () => void;
   onDeleted: () => void;
 }) {
@@ -437,7 +432,7 @@ function CastDeleteModal({
     setDeleting(true);
     setError(null);
     try {
-      await deleteCastPermanently(actorUid, actorName, cast.id);
+      await deleteCastPermanently(cast.id);
       onDeleted();
     } catch (err) {
       setError((err as Error).message);

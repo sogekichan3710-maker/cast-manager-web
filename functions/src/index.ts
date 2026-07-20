@@ -2,10 +2,12 @@ import { initializeApp } from "firebase-admin/app";
 import {
   FieldValue,
   getFirestore,
+  type DocumentReference,
   type Firestore,
   type Transaction,
 } from "firebase-admin/firestore";
 import { HttpsError, onCall, type CallableRequest } from "firebase-functions/v2/https";
+import { resolveCastDeleteOutcome } from "./castDeleteGuard";
 import {
   GuardError,
   assertCanChangeRole,
@@ -14,27 +16,49 @@ import {
   type Role,
   type TargetUserSnapshot,
 } from "./lastOwnerGuard";
+import { StoreAccessGuardError, normalizeStoreIds } from "./storeAccessGuard";
 
 /**
- * ユーザー承認・権限変更・無効化・最後のowner保護（PR5）。
+ * ユーザー承認・権限変更・無効化・最後のowner保護・キャスト完全削除（PR5）。
  *
- * これらはPR1〜PR4ではクライアント側のFirestoreトランザクションで
- * 暫定実装していた（README「⚠️ 重要: 権限変更処理は暫定実装です」参照）。
- * Admin SDKはFirestore Security Rulesをバイパスするため、Rules側では
- * users.role / status / accessibleStoreIds / approvedAt / approvedBy /
- * disabledAt をクライアントから直接変更できないよう制限し（firestore.rules
- * 参照）、これらの変更は必ずこの Cloud Functions を経由させる。
+ * これらはPR1〜PR4ではクライアント側のFirestoreトランザクション/複数回の
+ * 書き込みで暫定実装していた。Admin SDKはFirestore Security Rulesを
+ * バイパスするため、Rules側では users.role / status / accessibleStoreIds /
+ * approvedAt / approvedBy / disabledAt をクライアントから直接変更できない
+ * よう制限し（firestore.rules参照）、casts の任意削除もownerを含め
+ * クライアントSDKから禁止している。これらの変更は必ずこの Cloud Functions
+ * を経由させる。
  *
  * 「最後の承認済みownerの保護」は、Firestoreトランザクション内で
  * 承認済みowner数をクエリで数え、その場で判定することで、同時操作による
- * 競合があっても正しく機能する（クライアント側の事前チェックのみでは
- * 保証できなかった問題を解消）。
+ * 競合があっても正しく機能する。
+ *
+ * 監査ログの信頼性（レビュー対応）:
+ * - actorUid は必ず request.auth.uid（クライアントからは受け取らない）
+ * - actorName は必ず呼び出し元 users/{uid} ドキュメントから取得する
+ *   （request.data.actorName は一切参照・信用しない。以前はここを
+ *   クライアント入力から取っていたため、任意の名前を偽装できる不具合が
+ *   あった）
+ * - action は各Functionが固定文字列でハードコードしており、クライアントの
+ *   入力では変えられない
+ * - createdAt は必ずサーバー時刻（FieldValue.serverTimestamp()）
  */
 
 initializeApp();
 
 const USERS = "users";
+const STORES = "stores";
+const CASTS = "casts";
+const NAME_MATCHING_RULES = "nameMatchingRules";
 const AUDIT_LOGS = "auditLogs";
+const RELATED_CAST_COLLECTIONS = [
+  "monthlyResults",
+  "interviews",
+  "goals",
+  "motivations",
+  "wageHistory",
+] as const;
+const DELETE_BATCH_SIZE = 400;
 
 function db(): Firestore {
   return getFirestore();
@@ -48,14 +72,19 @@ async function countApprovedOwnersInTx(tx: Transaction): Promise<number> {
   return snap.size;
 }
 
-/** 呼び出し元が承認済みownerであることを検証する */
-async function requireCallerIsOwner(uid: string): Promise<void> {
+/**
+ * 呼び出し元が承認済みownerであることを検証し、監査ログ用のactorNameを
+ * サーバー側（呼び出し元自身のusersドキュメント）から取得して返す。
+ * クライアントが送ってくるactorNameは一切参照しない。
+ */
+async function requireCallerIsOwner(uid: string): Promise<string> {
   const snap = await db().collection(USERS).doc(uid).get();
   if (!snap.exists) throw new HttpsError("permission-denied", "ユーザー情報が見つかりません");
   const data = snap.data()!;
   if (data.status !== "approved" || data.role !== "owner") {
     throw new HttpsError("permission-denied", "オーナー権限が必要です");
   }
+  return String(data.displayName ?? "");
 }
 
 function requireAuth(request: CallableRequest): string {
@@ -70,7 +99,9 @@ function addAuditLog(
     actorUid: string;
     actorName: string;
     action: string;
+    collection: string;
     documentId: string;
+    storeId?: string | null;
     before: Record<string, unknown> | null;
     after: Record<string, unknown> | null;
   }
@@ -80,9 +111,33 @@ function addAuditLog(
     userId: params.actorUid,
     userName: params.actorName || params.actorUid,
     action: params.action,
-    collection: USERS,
+    collection: params.collection,
     documentId: params.documentId,
-    storeId: null,
+    storeId: params.storeId ?? null,
+    before: params.before,
+    after: params.after,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+/** トランザクション外（分割バッチ処理の後）で監査ログを直接書き込む */
+async function writeAuditLogDirect(params: {
+  actorUid: string;
+  actorName: string;
+  action: string;
+  collection: string;
+  documentId: string;
+  storeId: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}): Promise<void> {
+  await db().collection(AUDIT_LOGS).add({
+    userId: params.actorUid,
+    userName: params.actorName || params.actorUid,
+    action: params.action,
+    collection: params.collection,
+    documentId: params.documentId,
+    storeId: params.storeId,
     before: params.before,
     after: params.after,
     createdAt: FieldValue.serverTimestamp(),
@@ -91,8 +146,11 @@ function addAuditLog(
 
 function guardErrorToHttpsError(err: unknown): never {
   if (err instanceof GuardError) {
+    throw new HttpsError("failed-precondition", err.message);
+  }
+  if (err instanceof StoreAccessGuardError) {
     throw new HttpsError(
-      err.code === "self-confirm-required" ? "failed-precondition" : "failed-precondition",
+      err.code === "confirm-empty-required" ? "failed-precondition" : "invalid-argument",
       err.message
     );
   }
@@ -102,7 +160,7 @@ function guardErrorToHttpsError(err: unknown): never {
 /** pendingユーザーを承認する */
 export const approveUser = onCall(async (request) => {
   const callerUid = requireAuth(request);
-  await requireCallerIsOwner(callerUid);
+  const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
 
@@ -121,8 +179,9 @@ export const approveUser = onCall(async (request) => {
     });
     addAuditLog(tx, {
       actorUid: callerUid,
-      actorName: String(request.data?.actorName ?? ""),
+      actorName,
       action: "user.approve",
+      collection: USERS,
       documentId: targetUid,
       before: { status: before.status },
       after: { status: "approved" },
@@ -134,7 +193,7 @@ export const approveUser = onCall(async (request) => {
 /** ユーザーの権限（role）を変更する */
 export const changeUserRole = onCall(async (request) => {
   const callerUid = requireAuth(request);
-  await requireCallerIsOwner(callerUid);
+  const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   const newRole = request.data?.newRole as Role;
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
@@ -161,8 +220,9 @@ export const changeUserRole = onCall(async (request) => {
     tx.update(ref, { role: newRole, updatedAt: FieldValue.serverTimestamp() });
     addAuditLog(tx, {
       actorUid: callerUid,
-      actorName: String(request.data?.actorName ?? ""),
+      actorName,
       action: "user.roleChange",
+      collection: USERS,
       documentId: targetUid,
       before: { role: before.role },
       after: { role: newRole },
@@ -179,7 +239,7 @@ export const changeUserRole = onCall(async (request) => {
  */
 export const disableUser = onCall(async (request) => {
   const callerUid = requireAuth(request);
-  await requireCallerIsOwner(callerUid);
+  const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   const confirmSelf = Boolean(request.data?.confirmSelf);
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
@@ -213,8 +273,9 @@ export const disableUser = onCall(async (request) => {
     });
     addAuditLog(tx, {
       actorUid: callerUid,
-      actorName: String(request.data?.actorName ?? ""),
+      actorName,
       action: "user.disable",
+      collection: USERS,
       documentId: targetUid,
       before: { status: before.status },
       after: { status: "disabled" },
@@ -226,7 +287,7 @@ export const disableUser = onCall(async (request) => {
 /** 無効化されたユーザーを再有効化する */
 export const enableUser = onCall(async (request) => {
   const callerUid = requireAuth(request);
-  await requireCallerIsOwner(callerUid);
+  const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
 
@@ -247,8 +308,9 @@ export const enableUser = onCall(async (request) => {
     });
     addAuditLog(tx, {
       actorUid: callerUid,
-      actorName: String(request.data?.actorName ?? ""),
+      actorName,
       action: "user.enable",
+      collection: USERS,
       documentId: targetUid,
       before: { status: before.status },
       after: { status: "approved" },
@@ -257,15 +319,26 @@ export const enableUser = onCall(async (request) => {
   return { ok: true };
 });
 
-/** 閲覧可能店舗を設定する */
+/**
+ * 閲覧可能店舗を設定する。
+ * 入力検証（レビュー対応）:
+ * - storeIds は文字列配列・'__all__'禁止・重複除去（normalizeStoreIds）
+ * - 空配列（全店舗剥奪）は confirmEmpty: true が必須
+ * - 各storeIdは stores コレクションに実在し、かつ active であること
+ * - 対象ユーザーが存在すること
+ */
 export const setAccessibleStores = onCall(async (request) => {
   const callerUid = requireAuth(request);
-  await requireCallerIsOwner(callerUid);
+  const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
-  const storeIds = request.data?.storeIds;
+  const confirmEmpty = Boolean(request.data?.confirmEmpty);
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
-  if (!Array.isArray(storeIds) || !storeIds.every((s) => typeof s === "string")) {
-    throw new HttpsError("invalid-argument", "storeIds は文字列配列で指定してください");
+
+  let storeIds: string[];
+  try {
+    storeIds = normalizeStoreIds(request.data?.storeIds, confirmEmpty);
+  } catch (err) {
+    guardErrorToHttpsError(err);
   }
 
   await db().runTransaction(async (tx) => {
@@ -273,15 +346,151 @@ export const setAccessibleStores = onCall(async (request) => {
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
     const before = snap.data()!;
+
+    // 店舗の実在・active判定（トランザクション内・すべて読み取り→書き込みの順）
+    const storeRefs: DocumentReference[] = storeIds.map((id) => db().collection(STORES).doc(id));
+    const storeSnaps = storeRefs.length > 0 ? await tx.getAll(...storeRefs) : [];
+    for (let i = 0; i < storeSnaps.length; i++) {
+      const s = storeSnaps[i];
+      if (!s.exists) {
+        throw new HttpsError("invalid-argument", `店舗が見つかりません: ${storeIds[i]}`);
+      }
+      if (s.data()?.active !== true) {
+        throw new HttpsError("invalid-argument", `無効化された店舗は指定できません: ${storeIds[i]}`);
+      }
+    }
+
     tx.update(ref, { accessibleStoreIds: storeIds, updatedAt: FieldValue.serverTimestamp() });
     addAuditLog(tx, {
       actorUid: callerUid,
-      actorName: String(request.data?.actorName ?? ""),
+      actorName,
       action: "user.accessibleStoresChange",
+      collection: USERS,
       documentId: targetUid,
       before: { accessibleStoreIds: before.accessibleStoreIds ?? [] },
       after: { accessibleStoreIds: storeIds },
     });
   });
-  return { ok: true };
+  return { ok: true, storeIds };
+});
+
+async function deleteAllByCastId(col: string, castId: string): Promise<number> {
+  const snap = await db().collection(col).where("castId", "==", castId).get();
+  const refs = snap.docs.map((d) => d.ref);
+  for (let i = 0; i < refs.length; i += DELETE_BATCH_SIZE) {
+    const batch = db().batch();
+    for (const ref of refs.slice(i, i + DELETE_BATCH_SIZE)) batch.delete(ref);
+    await batch.commit();
+  }
+  return refs.length;
+}
+
+/**
+ * キャストを完全削除する（owner専用・Callable Cloud Function）。
+ *
+ * 手順:
+ * 1. 呼び出し元が承認済みownerであることを検証
+ * 2. 対象キャストを再取得
+ * 3. 関連データ（monthlyResults/interviews/goals/motivations/wageHistory）を
+ *    castIdクエリで再確認・全削除（400件単位バッチ）
+ * 4. nameMatchingRulesのうちこのキャストへリンクしているものを無効化
+ *    （削除ではなくactive:false・linkedCastId:null。監査のため履歴は残す）
+ * 5. キャスト本体を削除
+ * 6. 監査ログを記録
+ *
+ * 冪等性・再実行について（resolveCastDeleteOutcome参照）:
+ * - キャストが存在すればいつでも「初回実行 or 削除途中からの再実行」として
+ *   扱う。各コレクションの削除はcastIdクエリで対象を再取得するため、
+ *   既に削除済みの分は自然に0件となりスキップされる（二重削除にならない）。
+ * - キャストが既に存在せず、かつこのcastIdに対する
+ *   cast.deletePermanent監査ログが既に存在する場合は「前回で完了済み」と
+ *   判定し、何もせず成功を返す（クライアントのタイムアウト後の再送等に
+ *   安全に対応）。
+ * - キャストが存在せず監査ログも存在しない場合は、実在しないcastId
+ *   （誤入力等）とみなしエラーを返す。
+ *
+ * 注意: キャスト本体の削除（手順5）と監査ログの記録（手順6）は
+ * Firestoreトランザクションではなく2つの独立した書き込みである
+ * （関連データが数百〜数千件に及ぶ可能性があり、単一トランザクションの
+ * 書き込み上限・読み取り→書き込み順序制約に収まらないため）。
+ * 手順5の直後に手順6を実行するため実運用上の欠落リスクは小さいが、
+ * その間にFunctionの実行が中断された場合はキャスト本体は削除済みで
+ * 監査ログが未記録という状態になり得る。その場合、同じcastIdで
+ * 再実行すると（監査ログが見つからないため）「not-found」エラーとなり、
+ * 自動では復旧しない。このケースはオーナーへエラー表示のうえ、
+ * 監査ログ画面で該当キャストの完全削除ログが存在するかを確認し、
+ * 存在しなければ手動で監査ログを補完する運用とする（極めて稀なケースの
+ * ため、誤ったcastIdに対する偽の完了ログを自動生成する設計は採用しない）。
+ */
+export const deleteCastPermanently = onCall(async (request) => {
+  const callerUid = requireAuth(request);
+  const actorName = await requireCallerIsOwner(callerUid);
+  const castId = String(request.data?.castId ?? "");
+  if (!castId) throw new HttpsError("invalid-argument", "castId が必要です");
+
+  const castRef = db().collection(CASTS).doc(castId);
+  const castSnap = await castRef.get();
+
+  let priorDeleteLogExists = false;
+  if (!castSnap.exists) {
+    const priorLog = await db()
+      .collection(AUDIT_LOGS)
+      .where("action", "==", "cast.deletePermanent")
+      .where("documentId", "==", castId)
+      .limit(1)
+      .get();
+    priorDeleteLogExists = !priorLog.empty;
+  }
+
+  const outcome = resolveCastDeleteOutcome(castSnap.exists, priorDeleteLogExists);
+  if (outcome === "not-found") {
+    throw new HttpsError("not-found", "キャストが見つかりません");
+  }
+  if (outcome === "already-deleted") {
+    return { ok: true, alreadyDeleted: true, deletedCounts: null };
+  }
+
+  const castData = castSnap.data()!;
+
+  const deletedCounts: Record<string, number> = {};
+  for (const col of RELATED_CAST_COLLECTIONS) {
+    deletedCounts[col] = await deleteAllByCastId(col, castId);
+  }
+
+  const ruleSnap = await db()
+    .collection(NAME_MATCHING_RULES)
+    .where("linkedCastId", "==", castId)
+    .get();
+  for (let i = 0; i < ruleSnap.docs.length; i += DELETE_BATCH_SIZE) {
+    const batch = db().batch();
+    for (const d of ruleSnap.docs.slice(i, i + DELETE_BATCH_SIZE)) {
+      batch.update(d.ref, {
+        active: false,
+        linkedCastId: null,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: callerUid,
+      });
+    }
+    await batch.commit();
+  }
+  deletedCounts.nameMatchingRules = ruleSnap.size;
+
+  await castRef.delete();
+
+  await writeAuditLogDirect({
+    actorUid: callerUid,
+    actorName,
+    action: "cast.deletePermanent",
+    collection: CASTS,
+    documentId: castId,
+    storeId: castData.storeId ?? null,
+    before: {
+      stageName: castData.stageName,
+      storeId: castData.storeId,
+      deletedRelatedCounts: deletedCounts,
+    },
+    after: null,
+  });
+
+  return { ok: true, alreadyDeleted: false, deletedCounts };
 });
