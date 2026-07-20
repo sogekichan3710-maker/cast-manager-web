@@ -182,7 +182,7 @@ export async function matchExcelRowsChunked(
   for (const m of matches) {
     if (m.suggestedCastId) matched.add(m.suggestedCastId);
     for (const c of m.candidates) {
-      if (c.matchType === "exact") matched.add(c.cast.id);
+      matched.add(c.cast.id); // 候補は対象店舗内の完全一致のみ
     }
   }
   const missingCasts = casts.filter(

@@ -59,13 +59,13 @@ function linkRule(name: string, castId: string, wage: number): NameMatchingRuleW
   };
 }
 
-describe("buildInitialRowStates（安全な初期状態）", () => {
-  it("要確認行は初期状態が「未選択」になり、自動で新規登録にならない", () => {
-    // 候補なし（新規になりうる行）→ 要確認 → 未選択
+describe("buildInitialRowStates（初期状態）", () => {
+  it("完全一致なしの行は新規として自動確定される（未選択にならない）", () => {
     const { matches } = matchExcelRows([row("ももか")], "virgo", [], []);
     const states = buildInitialRowStates(matches, new Set());
-    expect(matches[0].needsConfirm).toBe(true);
-    expect(states[0].action).toBeNull();
+    expect(matches[0].needsConfirm).toBe(false);
+    expect(states[0].action).toBe("new");
+    expect(states[0].autoConfirmed).toBe(true);
   });
 
   it("同名複数・時給変更候補・在籍状態確認も未選択で開始する", () => {
@@ -101,23 +101,23 @@ describe("summarizePlan / canExecutePlan（最終確認画面）", () => {
     const rows = [row("A", 2), row("B", 3), row("C", 4), row("D", 5), row("E", 6)];
     const { matches } = matchExcelRows(rows, "virgo", [], []);
     const states = buildInitialRowStates(matches, new Set());
-    // 全行未選択（候補なし）
-    expect(summarizePlan(states).unresolved).toBe(5);
-    expect(canExecutePlan(states)).toBe(false);
+    // 完全一致なし → 全行が新規として自動確定（そのまま実行可能）
+    expect(summarizePlan(states).newCasts).toBe(5);
+    expect(summarizePlan(states).unresolved).toBe(0);
+    expect(canExecutePlan(states)).toBe(true);
 
-    states[0] = { ...states[0], action: "new" };
-    states[1] = { ...states[1], action: "new" };
-    states[2] = { ...states[2], action: "exclude" };
-    states[3] = { ...states[3], action: "link", castId: "cx" };
-    // states[4] は未選択のまま
+    // 手動で変更した場合の集計
+    states[0] = { ...states[0], action: "exclude" };
+    states[1] = { ...states[1], action: "link", castId: "cx" };
+    states[2] = { ...states[2], action: null }; // 手動で未選択へ戻す
     const s = summarizePlan(states);
     expect(s.newCasts).toBe(2);
     expect(s.excluded).toBe(1);
     expect(s.links).toBe(1);
     expect(s.unresolved).toBe(1);
-    expect(canExecutePlan(states)).toBe(false);
+    expect(canExecutePlan(states)).toBe(false); // 未選択が残れば実行不可
 
-    states[4] = { ...states[4], action: "exclude" };
+    states[2] = { ...states[2], action: "exclude" };
     expect(canExecutePlan(states)).toBe(true);
     expect(summarizePlan(states).unresolved).toBe(0);
   });
@@ -126,14 +126,13 @@ describe("summarizePlan / canExecutePlan（最終確認画面）", () => {
 describe("2回連続インポートの冪等性", () => {
   const excelRows = [row("あいり", 4), row("ももか", 5, 4500)];
 
-  it("1回目: 新規登録（要確認を解決）→ 2回目: ルールで自動紐付け+既存スキップになり重複しない", () => {
-    // ---- 1回目: キャストなし・ルールなし ----
+  it("1回目: 完全一致なし→自動新規 → 2回目: 完全一致で自動紐付け+既存スキップになり重複しない", () => {
+    // ---- 1回目: キャストなし・ルールなし → 全行自動で新規 ----
     const first = matchExcelRows(excelRows, "virgo", [], []);
     const firstStates = buildInitialRowStates(first.matches, new Set());
-    expect(firstStates.every((s) => s.action === null)).toBe(true); // 自動新規はしない
-    // ユーザーが「新規登録」を明示選択して実行した想定
-    const resolved = firstStates.map((s) => ({ ...s, action: "new" as const }));
-    expect(summarizePlan(resolved).newCasts).toBe(2);
+    expect(firstStates.every((s) => s.action === "new")).toBe(true);
+    expect(canExecutePlan(firstStates)).toBe(true); // 操作なしで実行可能
+    expect(summarizePlan(firstStates).newCasts).toBe(2);
 
     // ---- 実行後の状態を再現 ----
     // executeExcelImport は「新規登録」を作成キャストへの link ルールとして保存する

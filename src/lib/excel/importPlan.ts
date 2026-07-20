@@ -129,9 +129,9 @@ export function canExecutePlan(states: PlanRowState[]): boolean {
 // ---------------- 絞り込み ----------------
 
 export type RowFilterId =
+  | "attention"
   | "all"
   | "unresolved"
-  | "needsConfirm"
   | "autoConfirmed"
   | "exactMatch"
   | "newCandidate"
@@ -139,31 +139,37 @@ export type RowFilterId =
   | "archivedCandidate"
   | "multiCandidate";
 
+/**
+ * 絞り込み。既定は「要対応のみ」—
+ * 完全一致1名の自動紐付け行・完全一致なしの自動新規行は照合画面に出さず、
+ * 本当に確認が必要な行（複数一致・時給変更・在籍状態・ルール矛盾・未選択）
+ * だけを表示する。他の絞り込みで自動確定行の確認・手動変更も可能。
+ */
 export const ROW_FILTERS: ReadonlyArray<{ id: RowFilterId; label: string }> = [
+  { id: "attention", label: "要対応のみ" },
   { id: "all", label: "すべて" },
   { id: "unresolved", label: "未選択のみ" },
-  { id: "needsConfirm", label: "要確認のみ" },
   { id: "autoConfirmed", label: "自動確定済みのみ" },
   { id: "exactMatch", label: "完全一致のみ" },
-  { id: "newCandidate", label: "新規候補のみ" },
+  { id: "newCandidate", label: "新規登録のみ" },
   { id: "wageChange", label: "時給変更候補のみ" },
   { id: "archivedCandidate", label: "アーカイブ済み候補のみ" },
-  { id: "multiCandidate", label: "複数候補のみ" },
+  { id: "multiCandidate", label: "複数一致のみ" },
 ];
 
 export function rowMatchesFilter(st: PlanRowState, filter: RowFilterId): boolean {
   const m = st.match;
   switch (filter) {
+    case "attention":
+      return m.needsConfirm || st.action === null;
     case "all":
       return true;
     case "unresolved":
       return st.action === null;
-    case "needsConfirm":
-      return m.needsConfirm;
     case "autoConfirmed":
       return st.autoConfirmed;
     case "exactMatch":
-      return m.candidates.some((c) => c.matchType === "exact");
+      return m.candidates.length > 0; // 候補は完全一致のみ
     case "newCandidate":
       return m.candidates.length === 0;
     case "wageChange":
@@ -171,7 +177,7 @@ export function rowMatchesFilter(st: PlanRowState, filter: RowFilterId): boolean
     case "archivedCandidate":
       return m.candidates.some((c) => c.cast.archived);
     case "multiCandidate":
-      return m.sameNameConfirm || m.candidates.filter((c) => c.matchType === "exact").length > 1;
+      return m.sameNameConfirm || m.candidates.length > 1;
   }
 }
 
@@ -190,7 +196,7 @@ export function bulkLinkExactRows(states: PlanRowState[]): {
   let applied = 0;
   const next = states.map((st) => {
     const m = st.match;
-    const exacts = m.candidates.filter((c) => c.matchType === "exact");
+    const exacts = m.candidates; // 候補は完全一致のみ
     const eligible =
       exacts.length === 1 &&
       !exacts[0].cast.archived &&

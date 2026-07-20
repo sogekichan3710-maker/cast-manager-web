@@ -5,15 +5,17 @@ import type { ExcelMonthlyRow } from "./parseMonthlyExcel";
 /**
  * Excelインポートの照合ロジック（純関数・Firestore非依存）。
  *
- * 旧HTML版の3種確認フローを維持する:
- *  1. 時給変更候補   — 一致キャストの現在時給とExcel側時給が異なる
- *  2. 同名キャスト候補 — 完全一致が複数 / 類似候補のみ / 他店舗に同名
- *  3. 退店・在籍状態の確認候補
- *     - Excelに存在するが在籍状態が「退店」「休職」のキャスト
- *     - 対象店舗に「在籍」だがExcelに存在しないキャスト（退店の可能性）
+ * 照合は「対象店舗内での源氏名の正規化後**完全一致**」のみで判定する。
+ * 部分一致・類似一致・本名/ふりがな一致・他店舗同名などの類似候補は
+ * 実運用で誤操作・混乱の原因になるため、内部判定を含め一切行わない
+ * （「れい」「れいな」「みれい」は互いに別人として扱う）。
  *
- * 同名キャストを自動で統合することはなく、確認が必要な行は必ず
- * needsConfirm となり、ユーザーが行ごとに紐付け/新規/時給変更/除外を選ぶ。
+ * 判定仕様:
+ *  - 完全一致が1人だけ → 自動で既存キャストへ紐付け（照合画面に出さない）
+ *    ただし 時給差あり（時給変更候補）/ 退店・休職 / アーカイブ済み /
+ *    照合ルールとの矛盾 がある場合のみ要確認
+ *  - 完全一致が存在しない → 新規キャストとして扱う（自動確定）
+ *  - 完全一致が複数 → 紐付け先の選択画面を表示（唯一の手動選択ケース）
  */
 
 /** 照合に必要なキャスト情報（CastWithIdのサブセット） */
@@ -30,16 +32,16 @@ export interface MatchableCast {
 
 export type RowAction = "link" | "new" | "wage-change" | "exclude";
 
+/** 紐付け候補（対象店舗内の完全一致のみ） */
 export interface MatchCandidate {
   cast: MatchableCast;
-  /** exact: 対象店舗内で正規化名が完全一致 / similar: 類似（他店舗同名・部分一致・ふりがな一致） */
-  matchType: "exact" | "similar";
   /** 候補理由（表示用） */
   reason: string;
 }
 
 export interface RowMatch {
   row: ExcelMonthlyRow;
+  /** 対象店舗内で源氏名が完全一致したキャスト（類似候補は含まない） */
   candidates: MatchCandidate[];
   /** 提案するアクション（ユーザーが変更可能） */
   suggestedAction: RowAction;
@@ -51,7 +53,7 @@ export interface RowMatch {
   ruleReconfirmReasons: string[];
   /** 確認フロー1: 時給変更候補（一致キャストと時給が異なる） */
   wageChange: { castId: string; oldWage: number; newWage: number } | null;
-  /** 確認フロー2: 同名キャスト候補（複数一致・類似のみ等） */
+  /** 確認フロー2: 完全一致が複数（唯一の紐付け先選択ケース） */
   sameNameConfirm: boolean;
   /** 確認フロー3: 在籍状態の確認（一致キャストが退店・休職・アーカイブ） */
   statusConfirm: string | null;
@@ -67,8 +69,6 @@ export interface MatchResult {
 
 /**
  * ルール適用後も再確認が必要になる時給差の閾値（円）。
- * 旧版の具体値は旧index.html消失により再確認できないため、
- * 「大幅な時給差」の判定として500円以上を採用（要調整の場合は定数変更）。
  */
 export const WAGE_GAP_RECONFIRM = 500;
 
@@ -89,45 +89,16 @@ export function matchExcelRows(
   const matches: RowMatch[] = rows.map((row) => {
     const norm = normalizeName(row.name);
 
-    // ---- 候補収集 ----
-    const candidates: MatchCandidate[] = [];
+    // ---- 候補収集: 対象店舗内の完全一致のみ（類似判定はしない） ----
     const exactInStore = storeCasts.filter((c) => normalizeName(c.stageName) === norm);
-    for (const c of exactInStore) {
-      candidates.push({
-        cast: c,
-        matchType: "exact",
-        reason: c.archived ? "源氏名が完全一致（アーカイブ済み）" : "源氏名が完全一致",
-      });
-    }
-    // 類似: 対象店舗内の本名一致・ふりがな一致・部分一致
-    for (const c of storeCasts) {
-      if (exactInStore.includes(c)) continue;
-      const nStage = normalizeName(c.stageName);
-      const nReal = normalizeName(c.realName);
-      const nKana = normalizeName(c.kana);
-      if (nReal && nReal === norm) {
-        candidates.push({ cast: c, matchType: "similar", reason: "本名が一致" });
-      } else if (nKana && nKana === norm) {
-        candidates.push({ cast: c, matchType: "similar", reason: "ふりがなが一致" });
-      } else if (
-        norm.length >= 2 &&
-        nStage.length >= 2 &&
-        (nStage.includes(norm) || norm.includes(nStage))
-      ) {
-        candidates.push({ cast: c, matchType: "similar", reason: "源氏名が部分一致" });
-      }
-    }
-    // 類似: 他店舗の同名（自動紐付けはしない・確認用に表示のみ）
-    for (const c of casts) {
-      if (c.storeId === targetStoreId) continue;
-      if (normalizeName(c.stageName) === norm) {
-        candidates.push({ cast: c, matchType: "similar", reason: "他店舗に同名キャスト" });
-      }
-    }
+    const candidates: MatchCandidate[] = exactInStore.map((c) => ({
+      cast: c,
+      reason: c.archived ? "源氏名が完全一致（アーカイブ済み）" : "源氏名が完全一致",
+    }));
 
     // ---- 判定 ----
     const activeExact = exactInStore.filter((c) => !c.archived);
-    const single = activeExact.length === 1 ? activeExact[0] : null;
+    const single = activeExact.length === 1 && exactInStore.length === 1 ? activeExact[0] : null;
     const multipleSameName = exactInStore.length > 1;
 
     let suggestedAction: RowAction;
@@ -135,46 +106,38 @@ export function matchExcelRows(
     let wageChange: RowMatch["wageChange"] = null;
     let statusConfirm: string | null = null;
     let sameNameConfirm = false;
-    let needsConfirm = true;
+    let needsConfirm = false;
 
     if (single) {
+      // 完全一致が1人だけ → 自動紐付け（例外時のみ要確認）
       suggestedCastId = single.id;
-      // 確認フロー1: 時給変更候補
       if (row.hourlyWage != null && row.hourlyWage > 0 && row.hourlyWage !== single.hourlyWage) {
+        // 確認フロー1: 時給変更候補
         suggestedAction = "wage-change";
         wageChange = { castId: single.id, oldWage: single.hourlyWage, newWage: row.hourlyWage };
+        needsConfirm = true;
       } else {
         suggestedAction = "link";
       }
-      // 確認フロー3: 退店・休職キャストがExcelに出現
       if (single.status !== "在籍") {
+        // 確認フロー3: 退店・休職キャストがExcelに出現
         statusConfirm = `在籍状態が「${single.status}」のキャストがExcelに含まれています`;
-      }
-      // 完全一致1件・時給同一・在籍のみ自動確定候補
-      needsConfirm = !(suggestedAction === "link" && statusConfirm === null);
-      // 同名がアーカイブ済み側にも存在する場合は自動確定しない（同名重複）
-      if (exactInStore.length > 1) {
-        sameNameConfirm = true;
         needsConfirm = true;
       }
     } else if (multipleSameName) {
-      // 確認フロー2: 同名キャスト候補（自動で統合しない）
+      // 確認フロー2: 完全一致が複数 → 唯一の紐付け先選択ケース
       suggestedAction = "link";
       sameNameConfirm = true;
-    } else if (exactInStore.length === 1 && exactInStore[0].archived) {
+      needsConfirm = true;
+    } else if (exactInStore.length === 1) {
+      // 完全一致1件だがアーカイブ済み
       suggestedAction = "link";
       suggestedCastId = exactInStore[0].id;
       statusConfirm = "一致したキャストはアーカイブ済みです";
-      sameNameConfirm = false;
-    } else if (candidates.length > 0) {
-      // 類似候補のみ → 同名・類似確認
-      suggestedAction = "new";
-      sameNameConfirm = true;
-    } else {
-      // 候補なし。ルールで確定済みでない限り、自動で新規登録はしない
-      // （集計行等の誤検出データが勝手にキャスト登録されるのを防ぐ）
-      suggestedAction = "new";
       needsConfirm = true;
+    } else {
+      // 完全一致なし → 新規キャストとして扱う（自動確定）
+      suggestedAction = "new";
     }
 
     // ---- nameMatchingRules の適用 ----
@@ -216,7 +179,6 @@ export function matchExcelRows(
         );
       }
       if (ruleReconfirmReasons.length === 0) {
-        // ルールで自動確定（時給変更の要否は上の判定を維持）
         if (rule.decision === "link" && rule.linkedCastId) {
           suggestedCastId = rule.linkedCastId;
           const linkedCast = castById.get(rule.linkedCastId)!;

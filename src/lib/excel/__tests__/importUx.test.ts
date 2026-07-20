@@ -230,11 +230,12 @@ describe("自動確定", () => {
     expect(matches[0].wageChange).not.toBeNull();
   });
 
-  it("候補なし → 自動確定しない（要確認）", () => {
+  it("完全一致なし → 新規として自動確定（部分一致は別人扱い）", () => {
     const { matches } = matchExcelRows([row("ももか")], "virgo", [cast({})], []);
     const states = buildInitialRowStates(matches, new Set());
-    expect(states[0].autoConfirmed).toBe(false);
-    expect(states[0].action).toBeNull();
+    expect(matches[0].candidates).toHaveLength(0);
+    expect(states[0].autoConfirmed).toBe(true);
+    expect(states[0].action).toBe("new");
   });
 });
 
@@ -307,16 +308,15 @@ describe("一括操作", () => {
 
   it("未選択が残る場合は実行拒否 / 自動確定＋手動解決で実行可能", () => {
     const initial = build();
-    expect(canExecutePlan(initial)).toBe(false); // 候補なし等が未選択
-    let states = bulkNewNoCandidateRows(initial).states;
-    expect(canExecutePlan(states)).toBe(false); // 時給差・同名複数が残る
-    states = states.map((st) =>
+    // 候補なし行は自動新規になるが、時給差・同名複数が未選択のため実行不可
+    expect(canExecutePlan(initial)).toBe(false);
+    const states = initial.map((st) =>
       st.action === null ? { ...st, action: "exclude" as const } : st
     );
     expect(canExecutePlan(states)).toBe(true);
     const s = summarizePlan(states);
     expect(s.unresolved).toBe(0);
-    expect(s.autoConfirmed).toBe(1);
+    expect(s.autoConfirmed).toBe(3); // あいり（紐付け）+ しんじん・しんじん2（自動新規）
   });
 });
 
@@ -335,18 +335,21 @@ describe("絞り込み", () => {
   const namesFor = (filter: (typeof ROW_FILTERS)[number]["id"]) =>
     states.filter((st) => rowMatchesFilter(st, filter)).map((st) => st.match.row.name);
 
-  it("9種の絞り込みが定義されている", () => {
+  it("9種の絞り込みが定義されている（既定は要対応のみ）", () => {
     expect(ROW_FILTERS.map((f) => f.id)).toEqual([
-      "all", "unresolved", "needsConfirm", "autoConfirmed", "exactMatch",
+      "attention", "all", "unresolved", "autoConfirmed", "exactMatch",
       "newCandidate", "wageChange", "archivedCandidate", "multiCandidate",
     ]);
+    expect(ROW_FILTERS[0].label).toBe("要対応のみ");
   });
 
   it("各絞り込みが該当行だけを返す", () => {
     expect(namesFor("all")).toHaveLength(4);
-    expect(namesFor("autoConfirmed")).toEqual(["あいり"]);
-    expect(namesFor("unresolved")).toEqual(["しんじん", "れいな", "かぶり"]);
-    expect(namesFor("needsConfirm")).toEqual(["しんじん", "れいな", "かぶり"]);
+    // 自動確定: あいり（完全一致1名の紐付け）+ しんじん（完全一致なしの新規）
+    expect(namesFor("autoConfirmed")).toEqual(["あいり", "しんじん"]);
+    // 要対応（既定表示）: 自動確定行は表示されない
+    expect(namesFor("attention")).toEqual(["れいな", "かぶり"]);
+    expect(namesFor("unresolved")).toEqual(["れいな", "かぶり"]);
     expect(namesFor("exactMatch")).toEqual(expect.arrayContaining(["あいり", "れいな", "かぶり"]));
     expect(namesFor("newCandidate")).toEqual(["しんじん"]);
     expect(namesFor("wageChange")).toEqual(["れいな"]);
