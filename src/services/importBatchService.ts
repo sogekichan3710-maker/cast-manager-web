@@ -13,6 +13,7 @@ import {
 import { getDb } from "@/lib/firebase";
 import {
   ALL_STORES_FILTER,
+  type BatchChange,
   type ImportBatchDoc,
   type ImportBatchWithId,
   type RunStatus,
@@ -38,6 +39,11 @@ export async function createImportBatch(
     skippedCount: 0,
     errorCount: 0,
     summary: "",
+    changes: [],
+    rollbackStatus: "none",
+    rollbackAt: null,
+    rollbackBy: null,
+    rollbackSummary: "",
     createdAt: serverTimestamp(),
     createdBy: actorUid,
     completedAt: null,
@@ -45,7 +51,10 @@ export async function createImportBatch(
   return ref.id;
 }
 
-/** インポート完了・失敗・中断時に結果を書き込む */
+/**
+ * インポート完了・失敗・中断時に結果と変更記録を書き込む。
+ * changes は中断・失敗時も必ず保存する（部分実行分もロールバック可能にするため）。
+ */
 export async function completeImportBatch(
   batchId: string,
   result: {
@@ -55,10 +64,12 @@ export async function completeImportBatch(
     skippedCount: number;
     errorCount: number;
     summary: string;
-  }
+  },
+  changes: BatchChange[]
 ): Promise<void> {
   await updateDoc(doc(getDb(), COL, batchId), {
     ...result,
+    changes,
     completedAt: serverTimestamp(),
   });
 }

@@ -76,6 +76,8 @@ export interface CastDoc {
   memo: string;
   customerNotes: string;
   archived: boolean;
+  /** Excelインポートで新規作成されたキャストのみ持つ（Batch単位ロールバック用） */
+  importBatchId?: string | null;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -337,6 +339,30 @@ export function fmtDiff(v: number | null): string {
 export const RUN_STATUSES = ["processing", "completed", "failed", "cancelled"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+/** ロールバック状態 */
+export const ROLLBACK_STATUSES = ["none", "completed", "partial", "failed"] as const;
+export type RollbackStatus = (typeof ROLLBACK_STATUSES)[number];
+
+/**
+ * インポートがFirestoreへ加えた変更1件の記録（Batch単位ロールバック用）。
+ * before / after には変更した業務フィールドのみを保持する
+ * （Timestamp系メタは持たない。復元時のupdatedAt等は実行時に再設定）。
+ */
+export interface BatchChange {
+  type:
+    | "cast-created"
+    | "cast-updated"
+    | "mr-created"
+    | "mr-updated"
+    | "wage-added"
+    | "rule-created"
+    | "rule-updated";
+  collection: string;
+  docId: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
 /** importBatches/{batchId} — Excelインポート1回分の履歴 */
 export interface ImportBatchDoc {
   storeId: string;
@@ -349,6 +375,12 @@ export interface ImportBatchDoc {
   skippedCount: number;
   errorCount: number;
   summary: string;
+  /** このインポートが加えた変更の記録（ロールバック用）。旧データには存在しない */
+  changes?: BatchChange[];
+  rollbackStatus?: RollbackStatus;
+  rollbackAt?: Timestamp | null;
+  rollbackBy?: string | null;
+  rollbackSummary?: string;
   createdAt: Timestamp;
   createdBy: string;
   completedAt: Timestamp | null;

@@ -34,6 +34,13 @@ export interface RuleUpsertInput {
   hourlyWage: number | null;
 }
 
+export interface RuleUpsertResult {
+  ruleId: string;
+  created: boolean;
+  /** 更新時のみ: 変更前の業務フィールド（ロールバック用） */
+  before: Record<string, unknown> | null;
+}
+
 /**
  * 照合ルールを保存する。ドキュメントID = storeId__正規化名 のため、
  * 同じ名前の確定は常に同じルールを更新する（重複ルールは作られない）。
@@ -42,10 +49,10 @@ export interface RuleUpsertInput {
 export async function upsertNameMatchingRule(
   actorUid: string,
   input: RuleUpsertInput
-): Promise<void> {
+): Promise<RuleUpsertResult> {
   const db = getDb();
   const id = nameMatchingRuleId(input.storeId, input.normalizedName);
-  await runTransaction(db, async (tx) => {
+  return await runTransaction(db, async (tx) => {
     const ref = doc(db, COL, id);
     const snap = await tx.get(ref);
     const data = {
@@ -60,9 +67,21 @@ export async function upsertNameMatchingRule(
       updatedBy: actorUid,
     };
     if (snap.exists()) {
+      const cur = snap.data() as NameMatchingRuleDoc;
       tx.update(ref, data);
-    } else {
-      tx.set(ref, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
+      return {
+        ruleId: id,
+        created: false,
+        before: {
+          sourceName: cur.sourceName,
+          decision: cur.decision,
+          linkedCastId: cur.linkedCastId,
+          hourlyWage: cur.hourlyWage,
+          active: cur.active,
+        },
+      };
     }
+    tx.set(ref, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
+    return { ruleId: id, created: true, before: null };
   });
 }

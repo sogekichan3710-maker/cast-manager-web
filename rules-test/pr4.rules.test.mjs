@@ -358,9 +358,15 @@ describe("nameMatchingRules", () => {
     );
   });
 
-  it("削除は全員拒否（無効化はactive:false）", async () => {
+  it("削除: owner / 許可店舗adminは可（ロールバック用）・viewer / 許可外adminは不可", async () => {
     await assertFails(
-      deleteDoc(doc(dbAs(UIDS.owner), "nameMatchingRules", `${STORE_VIRGO}__あいり`))
+      deleteDoc(doc(dbAs(UIDS.viewerV), "nameMatchingRules", `${STORE_VIRGO}__あいり`))
+    );
+    await assertFails(
+      deleteDoc(doc(dbAs(UIDS.adminV), "nameMatchingRules", `${STORE_REGINA}__れいな`))
+    );
+    await assertSucceeds(
+      deleteDoc(doc(dbAs(UIDS.adminV), "nameMatchingRules", `${STORE_VIRGO}__あいり`))
     );
   });
 
@@ -449,8 +455,86 @@ describe("importBatches", () => {
     );
   });
 
+  it("ロールバック結果を書き込める（rollbackBy=本人）", async () => {
+    await assertSucceeds(
+      updateDoc(doc(dbAs(UIDS.adminV), "importBatches", "batch_virgo_1"), {
+        rollbackStatus: "completed",
+        rollbackAt: new Date(),
+        rollbackBy: UIDS.adminV,
+        rollbackSummary: "取り消し 5 / 戻せない 0 / エラー 0",
+      })
+    );
+  });
+
+  it("rollbackByの偽装は拒否", async () => {
+    await assertFails(
+      updateDoc(doc(dbAs(UIDS.adminV), "importBatches", "batch_virgo_1"), {
+        rollbackStatus: "completed",
+        rollbackBy: UIDS.owner,
+      })
+    );
+  });
+
   it("削除は全員拒否", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "importBatches", "batch_virgo_1")));
+  });
+});
+
+// ---------------- ロールバック: casts / wageHistory の削除制限 ----------------
+describe("ロールバック: 削除制限", () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      // インポートが作成したキャスト（importBatchId付き）
+      await setDoc(doc(db, "casts", "cast_import_virgo"), {
+        ...castData(STORE_VIRGO, UIDS.adminV, false),
+        importBatchId: "batch_virgo_1",
+      });
+      await setDoc(doc(db, "casts", "cast_import_regina"), {
+        ...castData(STORE_REGINA, "seed", false),
+        importBatchId: "batch_regina_1",
+      });
+      // インポートが追加した時給履歴（source: excel-import）と手動の履歴
+      await setDoc(doc(db, "wageHistory", "wh_import"), {
+        castId: "cast_virgo_1", storeId: STORE_VIRGO,
+        oldHourlyWage: 5000, newHourlyWage: 5500, effectiveMonth: "2026-07",
+        reason: "Excelインポートによる時給変更", source: "excel-import",
+        createdAt: new Date(), createdBy: UIDS.adminV,
+      });
+      await setDoc(doc(db, "wageHistory", "wh_manual"), {
+        castId: "cast_virgo_1", storeId: STORE_VIRGO,
+        oldHourlyWage: 4500, newHourlyWage: 5000, effectiveMonth: "2026-06",
+        reason: "昇給", createdAt: new Date(), createdBy: "seed",
+      });
+    });
+  });
+
+  it("casts: インポート作成キャスト（importBatchId付き）は許可店舗adminが削除できる", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_import_virgo")));
+  });
+
+  it("casts: 手動作成キャスト（importBatchIdなし）はownerでも削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
+  });
+
+  it("casts: 許可外店舗のインポート作成キャストは削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_import_regina")));
+  });
+
+  it("casts: viewerは削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.viewerV), "casts", "cast_import_virgo")));
+  });
+
+  it("wageHistory: source: excel-import は許可店舗adminが削除できる", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "wageHistory", "wh_import")));
+  });
+
+  it("wageHistory: 手動の履歴（sourceなし）はownerでも削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_manual")));
+  });
+
+  it("wageHistory: viewerは削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.viewerV), "wageHistory", "wh_import")));
   });
 });
 
@@ -559,13 +643,12 @@ describe("wageHistory: source: excel-import", () => {
     );
   });
 
-  it("更新・削除は不可（追記のみ）", async () => {
+  it("更新は不可（追記のみ。削除の制限は「ロールバック: 削除制限」で検証）", async () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
       await setDoc(doc(ctx.firestore(), "wageHistory", "wh_seed"), whData(STORE_VIRGO, "seed"));
     });
     await assertFails(
       updateDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_seed"), { newHourlyWage: 9999 })
     );
-    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "wageHistory", "wh_seed")));
   });
 });

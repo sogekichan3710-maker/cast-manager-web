@@ -5,7 +5,13 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
-import { monthlyResultId, type CastStatus, type RunStatus } from "@/types";
+import {
+  monthlyResultId,
+  type BatchChange,
+  type CastStatus,
+  type MonthlyResultDoc,
+  type RunStatus,
+} from "@/types";
 import type { ExcelMonthlyRow } from "@/lib/excel/parseMonthlyExcel";
 import type { RowAction } from "@/lib/excel/importMatching";
 import { buildRuleFromDecision } from "@/lib/excel/importMatching";
@@ -62,6 +68,41 @@ export interface ImportResult {
   skipped: number;
   errors: number;
   errorMessages: string[];
+}
+
+/** 月別成績の業務フィールドのみ（changes記録・復元用。メタは含めない） */
+function mrRowBusinessFields(row: ExcelMonthlyRow): Record<string, unknown> {
+  return {
+    totalSales: Math.round(row.totalSales),
+    payment: Math.round(row.payment),
+    honshimeiCount: row.honshimeiCount,
+    honshimeiGroupCount: row.honshimeiGroupCount,
+    customerCount: row.customerCount,
+    jounaiCount: row.jounaiCount,
+    douhan: row.douhan,
+    workDays: row.workDays,
+    workHours: row.workHours,
+    absent: row.absent,
+    notes: row.notes,
+  };
+}
+
+/** 既存月別成績ドキュメントから業務フィールドのみ抽出（復元用） */
+function mrBusinessFields(cur: MonthlyResultDoc): Record<string, unknown> {
+  return {
+    totalSales: cur.totalSales,
+    payment: cur.payment,
+    honshimeiCount: cur.honshimeiCount,
+    honshimeiGroupCount: cur.honshimeiGroupCount,
+    customerCount: cur.customerCount,
+    jounaiCount: cur.jounaiCount,
+    douhan: cur.douhan,
+    workDays: cur.workDays,
+    workHours: cur.workHours,
+    absent: cur.absent,
+    notes: cur.notes,
+    batchId: cur.batchId ?? null,
+  };
 }
 
 function mrDataFromRow(
@@ -122,6 +163,8 @@ export async function executeExcelImport(
   let updated = 0;
   let skipped = 0;
   const errorMessages: string[] = [];
+  /** このインポートが加えた変更の記録（Batch単位ロールバック用） */
+  const changes: BatchChange[] = [];
   let status: RunStatus = "completed";
   const total = decisions.length + statusDecisions.length;
   let done = 0;
@@ -145,6 +188,7 @@ export async function executeExcelImport(
           await runTransaction(db, async (tx) => {
             tx.set(castRef, {
               storeId,
+              importBatchId: batchId,
               stageName: d.row.name.trim(),
               realName: "",
               kana: "",
@@ -172,6 +216,13 @@ export async function executeExcelImport(
             });
           });
           castId = castRef.id;
+          changes.push({
+            type: "cast-created",
+            collection: "casts",
+            docId: castRef.id,
+            before: null,
+            after: { stageName: d.row.name.trim(), storeId },
+          });
         }
         if (!castId) throw new Error(`行${d.row.rowNumber}「${d.row.name}」: 紐付け先キャストが未選択です`);
 
@@ -182,55 +233,106 @@ export async function executeExcelImport(
           }
           const castRef = doc(db, "casts", castId);
           const whRef = doc(collection(db, "wageHistory"));
-          await runTransaction(db, async (tx) => {
+          const wageResult = await runTransaction(db, async (tx) => {
             const snap = await tx.get(castRef);
             if (!snap.exists()) throw new Error("キャストが見つかりません");
             const currentWage = (snap.data() as { hourlyWage?: number }).hourlyWage ?? 0;
-            if (currentWage !== d.newWage) {
-              tx.set(whRef, {
-                castId,
-                storeId,
-                oldHourlyWage: Math.round(currentWage),
-                newHourlyWage: Math.round(d.newWage!),
-                effectiveMonth: targetMonth,
-                reason: "Excelインポートによる時給変更",
-                source: "excel-import",
-                createdAt: serverTimestamp(),
-                createdBy: actorUid,
-              });
-              tx.update(castRef, {
-                hourlyWage: Math.round(d.newWage!),
-                updatedAt: serverTimestamp(),
-                updatedBy: actorUid,
-              });
-            }
+            if (currentWage === d.newWage) return null;
+            tx.set(whRef, {
+              castId,
+              storeId,
+              oldHourlyWage: Math.round(currentWage),
+              newHourlyWage: Math.round(d.newWage!),
+              effectiveMonth: targetMonth,
+              reason: "Excelインポートによる時給変更",
+              source: "excel-import",
+              createdAt: serverTimestamp(),
+              createdBy: actorUid,
+            });
+            tx.update(castRef, {
+              hourlyWage: Math.round(d.newWage!),
+              updatedAt: serverTimestamp(),
+              updatedBy: actorUid,
+            });
+            return { oldWage: Math.round(currentWage), newWage: Math.round(d.newWage!) };
           });
+          if (wageResult) {
+            changes.push({
+              type: "wage-added",
+              collection: "wageHistory",
+              docId: whRef.id,
+              before: null,
+              after: { castId, oldHourlyWage: wageResult.oldWage, newHourlyWage: wageResult.newWage },
+            });
+            changes.push({
+              type: "cast-updated",
+              collection: "casts",
+              docId: castId,
+              before: { hourlyWage: wageResult.oldWage },
+              after: { hourlyWage: wageResult.newWage },
+            });
+          }
         }
 
         // 月別成績の保存（既存はskip/overwrite。overwriteは最新を取得して更新）
         const mrRef = doc(db, "monthlyResults", monthlyResultId(storeId, castId, targetMonth));
-        const outcome = await runTransaction(db, async (tx) => {
+        const mrOutcome = await runTransaction(db, async (tx) => {
           const snap = await tx.get(mrRef);
           const data = mrDataFromRow(storeId, castId!, targetMonth, d.row, batchId, actorUid);
           if (!snap.exists()) {
             tx.set(mrRef, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
-            return "created" as const;
+            return { outcome: "created" as const, before: null };
           }
           if (d.existing === "overwrite") {
             // storeId / castId / month はID構造上同一。createdAt / createdBy は保持される
+            const cur = snap.data() as MonthlyResultDoc;
             tx.update(mrRef, data);
-            return "updated" as const;
+            return { outcome: "updated" as const, before: mrBusinessFields(cur) };
           }
-          return "skipped" as const;
+          return { outcome: "skipped" as const, before: null };
         });
-        if (outcome === "created") created++;
-        else if (outcome === "updated") updated++;
-        else skipped++;
+        if (mrOutcome.outcome === "created") {
+          created++;
+          changes.push({
+            type: "mr-created",
+            collection: "monthlyResults",
+            docId: mrRef.id,
+            before: null,
+            after: null,
+          });
+        } else if (mrOutcome.outcome === "updated") {
+          updated++;
+          changes.push({
+            type: "mr-updated",
+            collection: "monthlyResults",
+            docId: mrRef.id,
+            before: mrOutcome.before,
+            after: mrRowBusinessFields(d.row),
+          });
+        } else {
+          skipped++;
+        }
 
-        // 照合ルールの保存（確定内容を次回インポートの候補判定に利用）
+        // 照合ルールの保存（確定内容を次回インポートの候補判定に利用）。
+        // 「新規登録」は作成したキャストへの link として保存する
+        // （同じファイルを再インポートしたときに重複登録せず紐付けさせるため）
         if (d.saveRule) {
-          const rule = buildRuleFromDecision(storeId, d.row, d.action, castId);
-          await upsertNameMatchingRule(actorUid, rule);
+          const effectiveAction = d.action === "new" ? "link" : d.action;
+          const rule = buildRuleFromDecision(storeId, d.row, effectiveAction, castId);
+          const res = await upsertNameMatchingRule(actorUid, rule);
+          changes.push({
+            type: res.created ? "rule-created" : "rule-updated",
+            collection: "nameMatchingRules",
+            docId: res.ruleId,
+            before: res.before,
+            after: {
+              sourceName: rule.sourceName,
+              decision: rule.decision,
+              linkedCastId: rule.linkedCastId,
+              hourlyWage: rule.hourlyWage,
+              active: true,
+            },
+          });
         }
       }
     } catch (err) {
@@ -250,15 +352,27 @@ export async function executeExcelImport(
       try {
         if (s.newStatus) {
           const ref = doc(db, "casts", s.castId);
-          await runTransaction(db, async (tx) => {
+          const prevStatus = await runTransaction(db, async (tx) => {
             const snap = await tx.get(ref);
             if (!snap.exists()) throw new Error("キャストが見つかりません");
+            const cur = (snap.data() as { status?: string }).status ?? "";
+            if (cur === s.newStatus) return null;
             tx.update(ref, {
               status: s.newStatus,
               updatedAt: serverTimestamp(),
               updatedBy: actorUid,
             });
+            return cur;
           });
+          if (prevStatus !== null) {
+            changes.push({
+              type: "cast-updated",
+              collection: "casts",
+              docId: s.castId,
+              before: { status: prevStatus },
+              after: { status: s.newStatus },
+            });
+          }
         }
       } catch (err) {
         errorMessages.push(`在籍状態の更新（${s.castId}）: ${(err as Error).message}`);
@@ -276,14 +390,19 @@ export async function executeExcelImport(
 
   const summary = `作成 ${created} / 上書き ${updated} / スキップ ${skipped} / エラー ${errorMessages.length}`;
   try {
-    await completeImportBatch(batchId, {
-      status,
-      createdCount: created,
-      updatedCount: updated,
-      skippedCount: skipped,
-      errorCount: errorMessages.length,
-      summary,
-    });
+    // changes は中断・失敗時も必ず保存する（部分実行分のロールバックのため）
+    await completeImportBatch(
+      batchId,
+      {
+        status,
+        createdCount: created,
+        updatedCount: updated,
+        skippedCount: skipped,
+        errorCount: errorMessages.length,
+        summary,
+      },
+      changes
+    );
   } catch (err) {
     errorMessages.push(`インポート履歴の更新に失敗: ${(err as Error).message}`);
   }

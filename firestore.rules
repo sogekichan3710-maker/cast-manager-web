@@ -143,8 +143,13 @@ service cloud.firestore {
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.updatedBy == request.auth.uid;
       // 完全削除はPR5でowner専用の安全な関連データ削除として実装予定。
-      // それまでは全面禁止（非表示はarchived:trueで扱う）。
-      allow delete: if false;
+      // 例外: Excelインポートが新規作成したキャスト（importBatchId付き）のみ、
+      // Batch単位ロールバックのため owner / 許可店舗のadmin が削除できる。
+      // 手動作成のキャスト（importBatchIdなし）は従来どおり削除全面禁止。
+      allow delete: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && resource.data.keys().hasAny(['importBatchId'])
+        && resource.data.importBatchId is string;
     }
 
     match /monthlyResults/{docId} {
@@ -225,7 +230,13 @@ service cloud.firestore {
         && canAccessStore(request.resource.data.storeId)
         && request.resource.data.storeId != '__all__'
         && request.resource.data.createdBy == request.auth.uid;
-      allow update, delete: if false;
+      allow update: if false;
+      // 例外: Excelインポートが追加した履歴（source: excel-import）のみ、
+      // Batch単位ロールバックのため削除可。手動・移行の履歴は削除不可のまま
+      allow delete: if isAdminOrAbove()
+        && canAccessStore(resource.data.storeId)
+        && resource.data.keys().hasAny(['source'])
+        && resource.data.source == 'excel-import';
     }
 
     // ---------- インポート履歴（owner / 許可店舗のadminのみ作成） ----------
@@ -237,15 +248,20 @@ service cloud.firestore {
         && canAccessStore(request.resource.data.storeId)
         && request.resource.data.storeId != '__all__'
         && request.resource.data.createdBy == request.auth.uid;
-      // 更新: 実行完了時の件数・状態の書き込みのみ。
-      // storeId / createdBy / createdAt / fileName / targetMonth は改竄禁止
+      // 更新: 実行完了時の件数・状態・変更記録、ロールバック結果の書き込みのみ。
+      // storeId / createdBy / createdAt / fileName / targetMonth は改竄禁止。
+      // rollbackBy を書き込む場合は本人のuidのみ（偽装禁止）
       allow update: if isAdminOrAbove()
         && canAccessStore(resource.data.storeId)
         && request.resource.data.storeId == resource.data.storeId
         && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.fileName == resource.data.fileName
-        && request.resource.data.targetMonth == resource.data.targetMonth;
+        && request.resource.data.targetMonth == resource.data.targetMonth
+        && (
+          request.resource.data.get('rollbackBy', null) == resource.data.get('rollbackBy', null)
+          || request.resource.data.rollbackBy == request.auth.uid
+        );
       allow delete: if false;
     }
 
@@ -277,8 +293,9 @@ service cloud.firestore {
         && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.updatedBy == request.auth.uid;
-      // 削除は不可（無効化は active:false で扱う）
-      allow delete: if false;
+      // 削除: owner / 許可店舗のadminのみ（インポートのBatch単位ロールバック用。
+      // 通常の無効化は active:false を推奨）。viewerは不可
+      allow delete: if isAdminOrAbove() && canAccessStore(resource.data.storeId);
     }
 
     // ---------- 監査ログ（追記のみ） ----------
