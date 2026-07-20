@@ -70,8 +70,12 @@ export interface ImportResult {
   errorMessages: string[];
 }
 
-/** 月別成績の業務フィールドのみ（changes記録・復元用。メタは含めない） */
-function mrRowBusinessFields(row: ExcelMonthlyRow): Record<string, unknown> {
+/**
+ * 月別成績の業務フィールドのみ（changes記録・復元用。メタは含めない）。
+ * Excel行→Firestore保存値のマッピングの単一の定義であり、
+ * 実ファイル一致テストからも参照する。
+ */
+export function mrRowBusinessFields(row: ExcelMonthlyRow): Record<string, unknown> {
   return {
     totalSales: Math.round(row.totalSales),
     payment: Math.round(row.payment),

@@ -74,22 +74,47 @@ export interface ExcelParseResult {
   warnings: string[];
 }
 
-/** 列名エイリアス（正規化後の文字列で比較） */
+/**
+ * 列名エイリアス（正規化後の文字列で比較・**配列の並び順が優先順位**）。
+ * 実店舗の給与明細（VIRGO 2024年7月）の「一覧」シートの列名
+ * （源氏名 / 時給 / 出勤数 / 労働時間 / 同伴組 / 本指名 / 場内 / 売上 /
+ *   総支給額）を含む。同義列が複数あるシートでは先頭の別名を優先する。
+ */
 const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber">, string[]> = {
-  name: ["源氏名", "名前", "キャスト名", "キャスト", "氏名", "name"],
+  name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
-  totalSales: ["総売上", "売上", "総売り上げ", "売上合計", "totalsales", "sales"],
-  payment: ["支給額", "給料", "給与", "支給", "総支給額", "payment"],
-  honshimeiCount: ["本指名", "本指名本数", "honshimei"],
+  totalSales: ["総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
+  // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
+  // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
+  payment: ["支給額", "総支給額", "支給合計", "給料", "給与", "支給", "payment"],
+  honshimeiCount: ["本指名", "本指名本数", "本指名数", "honshimei"],
   honshimeiGroupCount: ["本指名組数", "本指名組", "本指名(組)", "hongroup"],
   customerCount: ["顧客数", "客数", "customers"],
   jounaiCount: ["場内", "場内指名", "jounai"],
-  douhan: ["同伴", "同伴数", "douhan"],
-  workDays: ["出勤日数", "出勤", "workdays"],
-  workHours: ["出勤時間", "勤務時間", "workhours"],
+  douhan: ["同伴", "同伴組", "同伴数", "douhan"],
+  workDays: ["出勤日数", "出勤数", "出勤", "workdays"],
+  workHours: ["出勤時間", "労働時間", "勤務時間", "労時間", "workhours"],
   absent: ["欠勤", "欠勤数", "absent"],
   notes: ["備考", "メモ", "notes", "note"],
 };
+
+/**
+ * ヘッダー判定で「既知列」として数えるフィールド。
+ * 備考はマスターシート（「設定」等）にも現れる弱いシグナルのため数えない。
+ */
+const HEADER_SIGNAL_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
+  "hourlyWage",
+  "totalSales",
+  "payment",
+  "honshimeiCount",
+  "honshimeiGroupCount",
+  "customerCount",
+  "jounaiCount",
+  "douhan",
+  "workDays",
+  "workHours",
+  "absent",
+];
 
 /**
  * キャスト名として扱わない語（正規化後の完全一致、または合計/平均系の前後方一致）。
@@ -163,6 +188,14 @@ function toNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * 小数2桁へ丸める（Excelの浮動小数点誤差対策。
+ * 実ファイルの労働時間は 32.99999999999999 のような値になる）
+ */
+function to2(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
 /** 数値のみ（"55" / 55 / "1,200" / "¥500" 等）か */
 function isNumericOnly(raw: string): boolean {
   const s = raw.normalize("NFKC").trim().replace(/[,¥￥\s%％]/g, "");
@@ -197,28 +230,47 @@ interface HeaderDetection {
 }
 
 /**
+ * フィールドの列を探す。エイリアスの並び順を優先し、
+ * 「支給額」と「総支給額」が両方ある場合は先頭のエイリアスを採用する。
+ */
+function findColumn(
+  cells: string[],
+  field: keyof typeof COLUMN_ALIASES,
+  used: Set<number>
+): number {
+  for (const alias of COLUMN_ALIASES[field]) {
+    const a = normText(alias);
+    const idx = cells.findIndex((c, i) => c !== "" && c === a && !used.has(i));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+/**
  * ヘッダー行を探す。
- * 「名前列エイリアスを含み、かつ他の既知列（時給・総売上・支給額等）が
- *  2つ以上そろう行」のみをヘッダーとして認める。
- * （「設定」シートの単独ラベルをヘッダーと誤認しないため）
+ * 「名前列エイリアスを含み、かつ数値系の既知列（時給・総売上・支給額・
+ *  出勤数等）が2つ以上そろう行」のみをヘッダーとして認める。
+ * （「設定」シートの「キャスト名+時給+備考」程度の行をヘッダーと誤認しないため）
  */
 function detectHeader(grid: unknown[][], maxScan = 30): HeaderDetection | null {
   let best: HeaderDetection | null = null;
   for (let r = 0; r < Math.min(grid.length, maxScan); r++) {
     const cells = (grid[r] ?? []).map(normText);
-    const nameCol = cells.findIndex((c) => COLUMN_ALIASES.name.includes(c));
+    const nameCol = findColumn(cells, "name", new Set());
     if (nameCol < 0) continue;
+    const used = new Set<number>([nameCol]);
     const colIndex: HeaderDetection["colIndex"] = { name: nameCol };
     let knownCols = 0;
     (Object.keys(COLUMN_ALIASES) as Array<keyof typeof COLUMN_ALIASES>).forEach((field) => {
       if (field === "name") return;
-      const idx = cells.findIndex((c) => c !== "" && COLUMN_ALIASES[field].includes(c));
-      if (idx >= 0 && idx !== nameCol) {
+      const idx = findColumn(cells, field, used);
+      if (idx >= 0) {
         colIndex[field] = idx;
-        knownCols++;
+        used.add(idx);
+        if (HEADER_SIGNAL_FIELDS.includes(field)) knownCols++;
       }
     });
-    if (knownCols < 2) continue; // 名前+既知2列未満はヘッダーと認めない
+    if (knownCols < 2) continue; // 名前+数値系既知2列未満はヘッダーと認めない
     if (!best || knownCols > best.knownCols) {
       best = { headerRowIdx: r, colIndex, knownCols };
     }
@@ -286,14 +338,14 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
       hourlyWage: hasWageCol ? Math.round(toNum(get(cells, "hourlyWage"))) : null,
       totalSales: Math.round(toNum(get(cells, "totalSales"))),
       payment: Math.round(toNum(get(cells, "payment"))),
-      honshimeiCount: toNum(get(cells, "honshimeiCount")),
-      honshimeiGroupCount: toNum(get(cells, "honshimeiGroupCount")),
-      customerCount: toNum(get(cells, "customerCount")),
-      jounaiCount: toNum(get(cells, "jounaiCount")),
-      douhan: toNum(get(cells, "douhan")),
-      workDays: toNum(get(cells, "workDays")),
-      workHours: toNum(get(cells, "workHours")),
-      absent: toNum(get(cells, "absent")),
+      honshimeiCount: to2(toNum(get(cells, "honshimeiCount"))),
+      honshimeiGroupCount: to2(toNum(get(cells, "honshimeiGroupCount"))),
+      customerCount: to2(toNum(get(cells, "customerCount"))),
+      jounaiCount: to2(toNum(get(cells, "jounaiCount"))),
+      douhan: to2(toNum(get(cells, "douhan"))),
+      workDays: to2(toNum(get(cells, "workDays"))),
+      workHours: to2(toNum(get(cells, "workHours"))),
+      absent: to2(toNum(get(cells, "absent"))),
       notes: String(get(cells, "notes") ?? "").trim(),
     });
   }
