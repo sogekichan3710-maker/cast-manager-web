@@ -16,6 +16,13 @@ export class StoreAccessGuardError extends Error {
   }
 }
 
+/** 値が文字列配列かどうかを判定する型ガード（要素の型も明示的に検証する） */
+function isStringArray(value: unknown): value is string[] {
+  if (!Array.isArray(value)) return false;
+  const items: unknown[] = value;
+  return items.every((item: unknown): item is string => typeof item === "string");
+}
+
 /**
  * storeIds入力を正規化する。
  * - 文字列配列以外は拒否
@@ -25,13 +32,13 @@ export class StoreAccessGuardError extends Error {
  * - 空配列（全店舗アクセスの剥奪）は confirmEmpty が true の場合のみ許可
  */
 export function normalizeStoreIds(rawStoreIds: unknown, confirmEmpty: boolean): string[] {
-  if (!Array.isArray(rawStoreIds) || !rawStoreIds.every((s) => typeof s === "string")) {
+  if (!isStringArray(rawStoreIds)) {
     throw new StoreAccessGuardError("storeIds は文字列配列で指定してください");
   }
   if (rawStoreIds.includes("__all__")) {
     throw new StoreAccessGuardError("'__all__' はstoreIdとして指定できません");
   }
-  const deduped = Array.from(new Set(rawStoreIds));
+  const deduped: string[] = Array.from(new Set(rawStoreIds));
   if (deduped.length === 0 && !confirmEmpty) {
     throw new StoreAccessGuardError(
       "閲覧可能店舗を空にする場合は confirmEmpty を true にして再実行してください",

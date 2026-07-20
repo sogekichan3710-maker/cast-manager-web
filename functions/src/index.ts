@@ -4,6 +4,7 @@ import {
   getFirestore,
   type DocumentReference,
   type Firestore,
+  type QueryDocumentSnapshot,
   type Transaction,
 } from "firebase-admin/firestore";
 import { HttpsError, onCall, type CallableRequest } from "firebase-functions/v2/https";
@@ -46,6 +47,41 @@ import { StoreAccessGuardError, normalizeStoreIds } from "./storeAccessGuard";
 
 initializeApp();
 
+/**
+ * Callable Functionsのrequest.data型（PR5レビュー対応: TS7006解消のため
+ * onCall<T>へ明示的に渡す。実行時の型は保証されないクライアント入力の
+ * ため、検証が必要なフィールド（例: storeIds）は unknown で受け取り、
+ * ハンドラ内で検証してから使う）。
+ */
+interface ApproveUserRequestData {
+  targetUid: string;
+}
+interface ChangeUserRoleRequestData {
+  targetUid: string;
+  /** クライアント入力は信用せず、isRole()で検証してから使う */
+  newRole: unknown;
+}
+interface DisableUserRequestData {
+  targetUid: string;
+  confirmSelf?: boolean;
+}
+interface EnableUserRequestData {
+  targetUid: string;
+}
+interface SetAccessibleStoresRequestData {
+  targetUid: string;
+  storeIds: unknown;
+  confirmEmpty?: boolean;
+}
+interface DeleteCastPermanentlyRequestData {
+  castId: string;
+}
+
+const ROLE_VALUES: readonly Role[] = ["owner", "admin", "viewer"];
+function isRole(value: unknown): value is Role {
+  return typeof value === "string" && (ROLE_VALUES as readonly string[]).includes(value);
+}
+
 const USERS = "users";
 const STORES = "stores";
 const CASTS = "casts";
@@ -87,7 +123,7 @@ async function requireCallerIsOwner(uid: string): Promise<string> {
   return String(data.displayName ?? "");
 }
 
-function requireAuth(request: CallableRequest): string {
+function requireAuth<T>(request: CallableRequest<T>): string {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("unauthenticated", "ログインが必要です");
   return uid;
@@ -158,13 +194,13 @@ function guardErrorToHttpsError(err: unknown): never {
 }
 
 /** pendingユーザーを承認する */
-export const approveUser = onCall(async (request) => {
+export const approveUser = onCall<ApproveUserRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
 
-  await db().runTransaction(async (tx) => {
+  await db().runTransaction(async (tx: Transaction) => {
     const ref = db().collection(USERS).doc(targetUid);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
@@ -191,17 +227,18 @@ export const approveUser = onCall(async (request) => {
 });
 
 /** ユーザーの権限（role）を変更する */
-export const changeUserRole = onCall(async (request) => {
+export const changeUserRole = onCall<ChangeUserRoleRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
-  const newRole = request.data?.newRole as Role;
+  const newRoleInput = request.data?.newRole;
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
-  if (!["owner", "admin", "viewer"].includes(newRole)) {
+  if (!isRole(newRoleInput)) {
     throw new HttpsError("invalid-argument", "newRole が不正です");
   }
+  const newRole = newRoleInput;
 
-  await db().runTransaction(async (tx) => {
+  await db().runTransaction(async (tx: Transaction) => {
     const ref = db().collection(USERS).doc(targetUid);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
@@ -237,7 +274,7 @@ export const changeUserRole = onCall(async (request) => {
  * 自分自身を無効化する場合は confirmSelf: true が必須
  * （assertSelfDisableConfirmed＝誤操作による自己ロックアウト防止）。
  */
-export const disableUser = onCall(async (request) => {
+export const disableUser = onCall<DisableUserRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
@@ -250,7 +287,7 @@ export const disableUser = onCall(async (request) => {
     guardErrorToHttpsError(err);
   }
 
-  await db().runTransaction(async (tx) => {
+  await db().runTransaction(async (tx: Transaction) => {
     const ref = db().collection(USERS).doc(targetUid);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
@@ -285,13 +322,13 @@ export const disableUser = onCall(async (request) => {
 });
 
 /** 無効化されたユーザーを再有効化する */
-export const enableUser = onCall(async (request) => {
+export const enableUser = onCall<EnableUserRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
   if (!targetUid) throw new HttpsError("invalid-argument", "targetUid が必要です");
 
-  await db().runTransaction(async (tx) => {
+  await db().runTransaction(async (tx: Transaction) => {
     const ref = db().collection(USERS).doc(targetUid);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
@@ -327,7 +364,7 @@ export const enableUser = onCall(async (request) => {
  * - 各storeIdは stores コレクションに実在し、かつ active であること
  * - 対象ユーザーが存在すること
  */
-export const setAccessibleStores = onCall(async (request) => {
+export const setAccessibleStores = onCall<SetAccessibleStoresRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const targetUid = String(request.data?.targetUid ?? "");
@@ -341,14 +378,16 @@ export const setAccessibleStores = onCall(async (request) => {
     guardErrorToHttpsError(err);
   }
 
-  await db().runTransaction(async (tx) => {
+  await db().runTransaction(async (tx: Transaction) => {
     const ref = db().collection(USERS).doc(targetUid);
     const snap = await tx.get(ref);
     if (!snap.exists) throw new HttpsError("not-found", "対象ユーザーが見つかりません");
     const before = snap.data()!;
 
     // 店舗の実在・active判定（トランザクション内・すべて読み取り→書き込みの順）
-    const storeRefs: DocumentReference[] = storeIds.map((id) => db().collection(STORES).doc(id));
+    const storeRefs: DocumentReference[] = storeIds.map(
+      (id: string): DocumentReference => db().collection(STORES).doc(id)
+    );
     const storeSnaps = storeRefs.length > 0 ? await tx.getAll(...storeRefs) : [];
     for (let i = 0; i < storeSnaps.length; i++) {
       const s = storeSnaps[i];
@@ -376,7 +415,7 @@ export const setAccessibleStores = onCall(async (request) => {
 
 async function deleteAllByCastId(col: string, castId: string): Promise<number> {
   const snap = await db().collection(col).where("castId", "==", castId).get();
-  const refs = snap.docs.map((d) => d.ref);
+  const refs = snap.docs.map((d: QueryDocumentSnapshot): DocumentReference => d.ref);
   for (let i = 0; i < refs.length; i += DELETE_BATCH_SIZE) {
     const batch = db().batch();
     for (const ref of refs.slice(i, i + DELETE_BATCH_SIZE)) batch.delete(ref);
@@ -422,7 +461,7 @@ async function deleteAllByCastId(col: string, castId: string): Promise<number> {
  * 存在しなければ手動で監査ログを補完する運用とする（極めて稀なケースの
  * ため、誤ったcastIdに対する偽の完了ログを自動生成する設計は採用しない）。
  */
-export const deleteCastPermanently = onCall(async (request) => {
+export const deleteCastPermanently = onCall<DeleteCastPermanentlyRequestData>(async (request) => {
   const callerUid = requireAuth(request);
   const actorName = await requireCallerIsOwner(callerUid);
   const castId = String(request.data?.castId ?? "");
@@ -463,7 +502,8 @@ export const deleteCastPermanently = onCall(async (request) => {
     .get();
   for (let i = 0; i < ruleSnap.docs.length; i += DELETE_BATCH_SIZE) {
     const batch = db().batch();
-    for (const d of ruleSnap.docs.slice(i, i + DELETE_BATCH_SIZE)) {
+    const slice: QueryDocumentSnapshot[] = ruleSnap.docs.slice(i, i + DELETE_BATCH_SIZE);
+    for (const d of slice) {
       batch.update(d.ref, {
         active: false,
         linkedCastId: null,
