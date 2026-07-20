@@ -20,9 +20,15 @@ import {
   matchExcelRows,
   type MatchResult,
   type RowAction,
-  type RowMatch,
   type MatchableCast,
 } from "@/lib/excel/importMatching";
+import {
+  buildInitialRowStates,
+  canExecutePlan,
+  recomputeExisting,
+  summarizePlan,
+  type PlanRowState,
+} from "@/lib/excel/importPlan";
 import {
   currentMonth,
   isAdminOrAbove,
@@ -33,17 +39,16 @@ import {
 
 /**
  * Excelインポート（owner / 許可されたadmin）。
- * 旧HTML版のインポートフローを維持:
- *   店舗・月・ファイル選択 → 照合確認（時給変更 / 同名 / 在籍状態の3種確認）
- *   → 実行 → 結果表示。同名キャストの自動統合は行わない。
+ * 店舗・月・ファイル選択 → シート/範囲確認 → 照合確認（時給変更 / 同名 /
+ * 在籍状態の3種確認）→ 最終確認画面 → 実行 → 結果表示。
+ *
+ * 安全対策:
+ * - 要確認行の初期状態は「未選択」。すべて解決するまで実行不可
+ * - 自動で新規キャスト登録しない（ルールで確定済みの場合のみ自動提案）
+ * - 実行前に最終確認画面（新規/更新/時給変更/除外/要確認の件数）を必ず表示
  */
 
-interface RowState {
-  match: RowMatch;
-  action: RowAction;
-  castId: string | null;
-  existing: "none" | "skip" | "overwrite";
-  saveRule: boolean;
+interface RowState extends PlanRowState {
   showDiff: boolean;
 }
 
@@ -58,6 +63,7 @@ export default function ImportPage() {
   const [fileName, setFileName] = useState("");
   const [parseResult, setParseResult] = useState<ExcelParseResult | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
+  const fileBufferRef = useRef<ArrayBuffer | null>(null);
 
   const [casts, setCasts] = useState<CastWithId[]>([]);
   const [rowStates, setRowStates] = useState<RowState[]>([]);
@@ -66,6 +72,7 @@ export default function ImportPage() {
   const [statusChoices, setStatusChoices] = useState<Map<string, string>>(new Map());
   const [preparing, setPreparing] = useState(false);
 
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -83,34 +90,56 @@ export default function ImportPage() {
   }, [storeIds]);
 
   const storeName = (id: string) => accessibleStores.find((s) => s.id === id)?.name ?? id;
+  const existingCastIds = useMemo(() => new Set(existingMap.keys()), [existingMap]);
+  const summary = useMemo(() => summarizePlan(rowStates), [rowStates]);
+  const executable = canExecutePlan(rowStates);
 
   if (!canImport) return null;
+
+  function resetPreview() {
+    setMatchResult(null);
+    setRowStates([]);
+    setResult(null);
+    setConfirmOpen(false);
+  }
+
+  function parseBuffer(buffer: ArrayBuffer, sheetName?: string) {
+    setPageError(null);
+    setParseResult(null);
+    resetPreview();
+    try {
+      setParseResult(parseMonthlyExcel(buffer, sheetName ? { sheetName } : undefined));
+    } catch (err) {
+      setPageError((err as Error).message);
+    }
+  }
 
   function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    setPageError(null);
-    setParseResult(null);
-    setMatchResult(null);
-    setRowStates([]);
-    setResult(null);
     setFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        setParseResult(parseMonthlyExcel(reader.result as ArrayBuffer));
-      } catch (err) {
-        setPageError((err as Error).message);
-      }
+      fileBufferRef.current = reader.result as ArrayBuffer;
+      parseBuffer(fileBufferRef.current);
     };
     reader.onerror = () => setPageError("ファイルの読み込みに失敗しました");
     reader.readAsArrayBuffer(file);
   }
 
+  function onSelectSheet(sheetName: string) {
+    if (!fileBufferRef.current) return;
+    parseBuffer(fileBufferRef.current, sheetName);
+  }
+
   /** 照合確認画面を作成する */
   async function onBuildPreview() {
     if (!parseResult || !storeId || !/^\d{4}-\d{2}$/.test(month) || preparing) return;
+    if (parseResult.rows.length === 0) {
+      setPageError("キャスト行が0件のため照合できません。シート・ヘッダー行をご確認ください。");
+      return;
+    }
     setPreparing(true);
     setPageError(null);
     try {
@@ -133,17 +162,10 @@ export default function ImportPage() {
       setExistingMap(exMap);
       setMatchResult(mr);
       setRowStates(
-        mr.matches.map((m) => {
-          const hasExisting = m.suggestedCastId ? exMap.has(m.suggestedCastId) : false;
-          return {
-            match: m,
-            action: m.suggestedAction,
-            castId: m.suggestedCastId,
-            existing: hasExisting ? "skip" : "none",
-            saveRule: true,
-            showDiff: false,
-          };
-        })
+        buildInitialRowStates(mr.matches, new Set(exMap.keys())).map((s) => ({
+          ...s,
+          showDiff: false,
+        }))
       );
       setStatusChoices(new Map());
     } catch (err) {
@@ -156,35 +178,16 @@ export default function ImportPage() {
   function updateRow(idx: number, patch: Partial<RowState>) {
     setRowStates((prev) => {
       const next = [...prev];
-      const cur = { ...next[idx], ...patch };
-      // 紐付け先が変わったら既存データの有無を再判定
-      const cid = cur.action === "new" ? null : cur.castId;
-      const hasExisting = cid ? existingMap.has(cid) : false;
-      if (!hasExisting) cur.existing = "none";
-      else if (cur.existing === "none") cur.existing = "skip";
-      next[idx] = cur;
+      const merged = { ...next[idx], ...patch };
+      const recomputed = recomputeExisting(merged, existingCastIds);
+      next[idx] = { ...merged, existing: recomputed.existing };
       return next;
     });
   }
 
   async function onExecute() {
-    if (!firebaseUser || running || !matchResult) return;
-    const unresolved = rowStates.filter(
-      (r) => (r.action === "link" || r.action === "wage-change") && !r.castId
-    );
-    if (unresolved.length > 0) {
-      setPageError(
-        `紐付け先が未選択の行があります（${unresolved.map((r) => `行${r.match.row.rowNumber}`).join(", ")}）。紐付け先を選ぶか、新規/除外を選択してください。`
-      );
-      return;
-    }
-    if (
-      !window.confirm(
-        `${storeName(storeId)} / ${monthToJa(month)} へ ${rowStates.length}行をインポートします。実行しますか？`
-      )
-    ) {
-      return;
-    }
+    if (!firebaseUser || running || !matchResult || !executable) return;
+    setConfirmOpen(false);
     setPageError(null);
     cancelRef.current = false;
     setRunning(true);
@@ -193,7 +196,7 @@ export default function ImportPage() {
     try {
       const decisions: RowDecision[] = rowStates.map((r) => ({
         row: r.match.row,
-        action: r.action,
+        action: r.action as RowAction, // executable 判定済み（null無し）
         castId: r.action === "new" ? null : r.castId,
         newWage: r.action === "wage-change" ? r.match.row.hourlyWage : null,
         existing: r.existing,
@@ -219,7 +222,8 @@ export default function ImportPage() {
     }
   }
 
-  const readyToPreview = !!parseResult && !!storeId && /^\d{4}-\d{2}$/.test(month);
+  const readyToPreview =
+    !!parseResult && parseResult.rows.length > 0 && !!storeId && /^\d{4}-\d{2}$/.test(month);
 
   return (
     <div className="app-shell">
@@ -229,7 +233,7 @@ export default function ImportPage() {
           <div>
             <h1 className="page-title">Excelインポート</h1>
             <p className="page-sub">
-              月別成績のExcelを読み込み、照合確認のうえ保存します（PCでの操作を推奨）
+              給与明細Excel（.xls / .xlsx）を読み込み、照合確認のうえ保存します（PCでの操作を推奨）
             </p>
           </div>
         </div>
@@ -244,8 +248,7 @@ export default function ImportPage() {
               value={storeId}
               onChange={(e) => {
                 setStoreId(e.target.value);
-                setMatchResult(null);
-                setRowStates([]);
+                resetPreview();
               }}
               disabled={running}
             >
@@ -260,32 +263,106 @@ export default function ImportPage() {
               value={month}
               onChange={(e) => {
                 setMonth(e.target.value);
-                setMatchResult(null);
-                setRowStates([]);
+                resetPreview();
               }}
               disabled={running}
             />
             <input
               type="file"
-              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               onChange={onFileSelected}
               disabled={running}
             />
           </div>
-          {fileName && (
-            <p className="page-sub" style={{ marginTop: 8 }}>
-              選択中: {fileName}
-              {parseResult && ` ／ ${parseResult.rows.length}行を検出（シート: ${parseResult.sheetName}）`}
-            </p>
-          )}
-          {parseResult && parseResult.errors.length > 0 && (
-            <details style={{ marginTop: 8 }}>
-              <summary>読み飛ばした行（{parseResult.errors.length}件）</summary>
-              {parseResult.errors.map((er, i) => (
-                <p key={i} className="page-sub">行{er.rowNumber}: {er.reason}</p>
+
+          {parseResult && (
+            <div style={{ marginTop: 12 }}>
+              {parseResult.warnings.map((w, i) => (
+                <div key={i} className="error-box" style={{ marginBottom: 8 }}>⚠ {w}</div>
               ))}
-            </details>
+
+              <div className="table-wrap">
+                <table className="data-table">
+                  <tbody>
+                    <tr><td>ファイル</td><td style={{ wordBreak: "break-all" }}>{fileName}</td></tr>
+                    <tr>
+                      <td>選択中シート</td>
+                      <td>
+                        <select
+                          className="form-input"
+                          style={{ maxWidth: 320, display: "inline-block" }}
+                          value={parseResult.sheetName}
+                          onChange={(e) => onSelectSheet(e.target.value)}
+                          disabled={running}
+                        >
+                          {parseResult.sheets.map((s) => (
+                            <option key={s.name} value={s.name}>
+                              {s.name}（有効{s.validRows}行）
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                    <tr><td>ヘッダー行</td><td>{parseResult.headerRowNumber}行目</td></tr>
+                    <tr>
+                      <td>データ範囲</td>
+                      <td>
+                        {parseResult.dataStartRow
+                          ? `${parseResult.dataStartRow}〜${parseResult.dataEndRow}行目`
+                          : "検出なし"}
+                      </td>
+                    </tr>
+                    <tr><td>検出キャスト行</td><td>{parseResult.rows.length}件</td></tr>
+                    <tr><td>除外行</td><td>{parseResult.excluded.length}件</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <details style={{ marginTop: 8 }}>
+                <summary>シートの判定結果（{parseResult.sheets.length}シート）</summary>
+                <div className="table-wrap" style={{ marginTop: 8 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr><th>シート</th><th>判定</th><th>ヘッダー行</th><th className="num">有効行</th></tr>
+                    </thead>
+                    <tbody>
+                      {parseResult.sheets.map((s) => (
+                        <tr key={s.name}>
+                          <td>{s.name}{s.adopted && <span className="badge badge-green" style={{ marginLeft: 6 }}>採用</span>}</td>
+                          <td>{s.reason}</td>
+                          <td>{s.headerRowNumber ? `${s.headerRowNumber}行目` : "-"}</td>
+                          <td className="num">{s.validRows}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+
+              {parseResult.excluded.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary>読み飛ばした行（理由付き・{parseResult.excluded.length}件）</summary>
+                  <div className="table-wrap" style={{ marginTop: 8 }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr><th>行</th><th>名前列の値</th><th>理由</th></tr>
+                      </thead>
+                      <tbody>
+                        {parseResult.excluded.map((ex, i) => (
+                          <tr key={i}>
+                            <td>{ex.rowNumber}</td>
+                            <td style={{ wordBreak: "break-all" }}>{ex.value || "（空欄）"}</td>
+                            <td>{ex.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              )}
+            </div>
           )}
+
           <div style={{ marginTop: 12 }}>
             <button
               className="btn btn-primary"
@@ -308,11 +385,17 @@ export default function ImportPage() {
               <h2 style={{ marginBottom: 4 }}>2. 照合確認</h2>
               <p className="page-sub" style={{ marginBottom: 12 }}>
                 {storeName(storeId)} / {monthToJa(month)} ―
-                要確認 {rowStates.filter((r) => r.match.needsConfirm).length}件 ／
+                未選択（要確認） {summary.unresolved}件 ／
                 時給変更候補 {rowStates.filter((r) => r.match.wageChange).length}件 ／
                 同名候補 {rowStates.filter((r) => r.match.sameNameConfirm).length}件 ／
                 在籍状態確認 {rowStates.filter((r) => r.match.statusConfirm).length}件
               </p>
+              {summary.unresolved > 0 && (
+                <div className="info-box" style={{ marginBottom: 12 }}>
+                  「未選択」の行がすべて解決されるまでインポートは実行できません。
+                  各行で紐付け・新規登録・時給変更・除外のいずれかを選択してください。
+                </div>
+              )}
 
               {rowStates.map((rs, idx) => (
                 <RowCard
@@ -371,9 +454,18 @@ export default function ImportPage() {
             <section className="section-card" style={{ marginBottom: 16 }}>
               <h2 style={{ marginBottom: 10 }}>4. インポートを実行</h2>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button className="btn btn-primary" onClick={() => void onExecute()} disabled={running}>
-                  {running ? "インポート中…" : "インポートを実行"}
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setConfirmOpen(true)}
+                  disabled={running || !executable}
+                >
+                  {running ? "インポート中…" : "最終確認へ"}
                 </button>
+                {!executable && !running && (
+                  <span className="page-sub" style={{ alignSelf: "center" }}>
+                    未選択の行が {summary.unresolved} 件あるため実行できません
+                  </span>
+                )}
                 {running && (
                   <button className="btn btn-ghost" onClick={() => { cancelRef.current = true; }}>
                     キャンセル（現在の行の処理後に停止）
@@ -400,6 +492,9 @@ export default function ImportPage() {
                   <p style={{ marginTop: 6 }}>
                     作成 {result.created} / 上書き {result.updated} / スキップ {result.skipped} / エラー {result.errors}
                   </p>
+                  <p className="page-sub" style={{ marginTop: 4 }}>
+                    このインポートは「インポート履歴」からBatch単位でロールバックできます。
+                  </p>
                   {result.errorMessages.map((m, i) => (
                     <p key={i} style={{ marginTop: 4 }}>{m}</p>
                   ))}
@@ -409,6 +504,48 @@ export default function ImportPage() {
           </>
         )}
       </main>
+
+      {confirmOpen && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-card" style={{ maxWidth: 480 }}>
+            <div className="modal-head">
+              <h2>インポート実行前の最終確認</h2>
+              <button className="btn btn-ghost btn-sm" onClick={() => setConfirmOpen(false)}>
+                ✕ 閉じる
+              </button>
+            </div>
+            <p className="page-sub" style={{ marginBottom: 10 }}>
+              {storeName(storeId)} / {monthToJa(month)} / {fileName}
+            </p>
+            <div className="table-wrap">
+              <table className="data-table">
+                <tbody>
+                  <tr><td>新規キャスト登録</td><td className="num">{summary.newCasts}件</td></tr>
+                  <tr><td>既存キャストへ紐付け</td><td className="num">{summary.links}件</td></tr>
+                  <tr><td>時給変更として処理</td><td className="num">{summary.wageChanges}件</td></tr>
+                  <tr><td>既存成績の上書き</td><td className="num">{summary.overwrite}件</td></tr>
+                  <tr><td>既存ありスキップ</td><td className="num">{summary.skipExisting}件</td></tr>
+                  <tr><td>インポート対象から除外</td><td className="num">{summary.excluded}件</td></tr>
+                  <tr><td>未選択（要確認）</td><td className="num">{summary.unresolved}件</td></tr>
+                  <tr><td>在籍状態の変更</td><td className="num">{statusChoices.size}件</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setConfirmOpen(false)}>
+                キャンセル
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => void onExecute()}
+                disabled={!executable || running}
+              >
+                実行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -428,16 +565,19 @@ function RowCard({
   onChange,
   disabled,
 }: {
-  rs: RowState;
+  rs: PlanRowState & { showDiff: boolean };
   existingMap: Map<string, MonthlyResultWithId>;
   storeName: (id: string) => string;
   targetStoreId: string;
-  onChange: (patch: Partial<RowState>) => void;
+  onChange: (patch: Partial<PlanRowState & { showDiff: boolean }>) => void;
   disabled: boolean;
 }) {
   const { match } = rs;
   const row = match.row;
-  const existing = rs.castId && rs.action !== "new" ? existingMap.get(rs.castId) : undefined;
+  const existing =
+    rs.castId && rs.action !== "new" && rs.action !== null
+      ? existingMap.get(rs.castId)
+      : undefined;
   const linkedCandidate = match.candidates.find((c) => c.cast.id === rs.castId);
 
   return (
@@ -445,17 +585,17 @@ function RowCard({
       <div className="row-head">
         <div>
           <span className="row-name">行{row.rowNumber}: {row.name}</span>
+          {rs.action === null && (
+            <span className="badge badge-red" style={{ marginLeft: 8 }}>未選択</span>
+          )}
           {match.ruleApplied && match.ruleReconfirmReasons.length === 0 && (
             <span className="badge badge-purple" style={{ marginLeft: 8 }}>ルール適用</span>
-          )}
-          {match.needsConfirm && (
-            <span className="badge badge-orange" style={{ marginLeft: 8 }}>要確認</span>
           )}
           {match.wageChange && (
             <span className="badge badge-yellow" style={{ marginLeft: 8 }}>時給変更候補</span>
           )}
           {match.sameNameConfirm && (
-            <span className="badge badge-red" style={{ marginLeft: 8 }}>同名候補</span>
+            <span className="badge badge-orange" style={{ marginLeft: 8 }}>同名・類似候補</span>
           )}
         </div>
         <span className="page-sub">
@@ -480,14 +620,14 @@ function RowCard({
               <input
                 type="radio"
                 name={`cand-${row.rowNumber}`}
-                checked={rs.castId === c.cast.id && rs.action !== "new" && rs.action !== "exclude"}
+                checked={rs.castId === c.cast.id && rs.action !== "new" && rs.action !== "exclude" && rs.action !== null}
                 disabled={disabled || c.cast.storeId !== targetStoreId}
                 onChange={() => {
                   const wageDiffers =
                     row.hourlyWage != null && row.hourlyWage > 0 && row.hourlyWage !== c.cast.hourlyWage;
                   onChange({
                     castId: c.cast.id,
-                    action: rs.action === "wage-change" || wageDiffers ? rs.action : "link",
+                    action: wageDiffers && rs.action === "wage-change" ? "wage-change" : "link",
                   });
                 }}
                 style={{ marginRight: 6 }}
@@ -533,7 +673,7 @@ function RowCard({
         })}
       </div>
 
-      {existing && rs.action !== "exclude" && (
+      {existing && rs.action !== "exclude" && rs.action !== null && (
         <div style={{ marginTop: 8 }}>
           <div className="candidate">
             この月の成績が既に存在します（総売上 ¥{existing.totalSales.toLocaleString()}）。
@@ -588,7 +728,7 @@ function RowCard({
         </div>
       )}
 
-      {rs.action !== "exclude" && (
+      {rs.action !== "exclude" && rs.action !== null && (
         <label className="check-label" style={{ marginTop: 8, display: "inline-flex", gap: 6 }}>
           <input
             type="checkbox"

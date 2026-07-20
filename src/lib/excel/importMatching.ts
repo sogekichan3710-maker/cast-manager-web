@@ -166,7 +166,10 @@ export function matchExcelRows(
       suggestedAction = "new";
       sameNameConfirm = true;
     } else {
+      // 候補なし。ルールで確定済みでない限り、自動で新規登録はしない
+      // （集計行等の誤検出データが勝手にキャスト登録されるのを防ぐ）
       suggestedAction = "new";
+      needsConfirm = true;
     }
 
     // ---- nameMatchingRules の適用 ----
@@ -199,6 +202,13 @@ export function matchExcelRows(
       }
       if (multipleSameName) {
         ruleReconfirmReasons.push("同名キャストが複数存在します");
+      }
+      if (rule.decision === "new" && exactInStore.length > 0) {
+        // 以前「新規登録」で確定した名前でも、同名キャストが既に存在する場合は
+        // 自動で再び新規登録しない（再インポートでのキャスト重複を防ぐ）
+        ruleReconfirmReasons.push(
+          "以前は新規登録しましたが、同名キャストが既に存在するため再確認が必要です"
+        );
       }
       if (ruleReconfirmReasons.length === 0) {
         // ルールで自動確定（時給変更の要否は上の判定を維持）
