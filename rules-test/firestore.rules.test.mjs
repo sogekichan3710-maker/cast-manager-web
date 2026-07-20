@@ -289,8 +289,8 @@ describe("owner", () => {
   it("users一覧を読める", async () => {
     await assertSucceeds(getDocs(collection(dbAs(UIDS.owner), "users")));
   });
-  it("他ユーザーを承認できる（status変更）", async () => {
-    await assertSucceeds(
+  it("他ユーザーのstatusをクライアントSDKから直接変更できない（PR5でCloud Functions専用に変更）", async () => {
+    await assertFails(
       updateDoc(doc(dbAs(UIDS.owner), "users", UIDS.pending), {
         status: "approved",
         approvedAt: new Date(),
@@ -300,8 +300,8 @@ describe("owner", () => {
       })
     );
   });
-  it("他ユーザーの権限を変更できる", async () => {
-    await assertSucceeds(
+  it("他ユーザーの権限をクライアントSDKから直接変更できない（PR5でCloud Functions専用に変更）", async () => {
+    await assertFails(
       updateDoc(doc(dbAs(UIDS.owner), "users", UIDS.viewerV), {
         role: "admin",
         updatedAt: new Date(),
@@ -564,12 +564,12 @@ describe("PR2: 店舗マスターの保護", () => {
   });
 });
 
-describe("PR2: キャスト完全削除の禁止", () => {
-  it("adminはキャストを削除できない", async () => {
+describe("PR2/PR5: キャスト完全削除", () => {
+  it("adminは手動作成キャストを削除できない（importBatchId付きのみ許可・詳細はpr5.rules.test.mjs）", async () => {
     await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "casts", "cast_virgo_1")));
   });
-  it("ownerでもキャストを削除できない（完全削除はPR5で実装）", async () => {
-    await assertFails(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
+  it("ownerは手動作成キャストも削除できる（PR5で完全削除機能として実装。詳細はpr5.rules.test.mjs）", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "casts", "cast_virgo_1")));
   });
 });
 
