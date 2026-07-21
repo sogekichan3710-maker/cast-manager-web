@@ -175,6 +175,120 @@ const SHEET_NAME_PENALTY = ["設定", "config", "master", "マスタ", "集計",
 const MAX_CONSECUTIVE_INVALID = 5;
 /** 「異常に多い」とみなすキャスト行数 */
 const TOO_MANY_ROWS = 150;
+/**
+ * シートの絶対上限（行・列）。実運用スケール（キャスト数百名規模、
+ * 日次データでも年単位で数千行程度）を大幅に超える値であり、
+ * これに達するのは「実際に大量のデータがある」場合のみを想定した
+ * 最終手段の安全装置（サーキットブレーカー）。通常はこの値ではなく
+ * actualUsedRange() による実データ範囲の検出で安全性を確保する
+ * （下記コメント参照）。
+ */
+const ABSOLUTE_MAX_ROWS = 20000;
+const ABSOLUTE_MAX_COLS = 500;
+
+/** 数式エラー値（#REF!等）の判定パターン */
+const FORMULA_ERROR_PATTERN = /^#(REF|VALUE|DIV\/0|NAME|N\/A|NULL|NUM|ERROR)!?\??$/i;
+
+function isFormulaErrorValue(v: unknown): boolean {
+  return typeof v === "string" && FORMULA_ERROR_PATTERN.test(v.trim());
+}
+
+/** 数式エラーメッセージ表示用の日本語ラベル */
+const FIELD_JA_LABELS: Record<keyof typeof COLUMN_ALIASES, string> = {
+  name: "名前",
+  hourlyWage: "時給",
+  scoutedBy: "スカウト者",
+  totalSales: "売上",
+  payment: "支給額",
+  honshimeiCount: "本指名",
+  honshimeiGroupCount: "本指名組数",
+  customerCount: "顧客数",
+  jounaiCount: "場内",
+  douhan: "同伴",
+  workDays: "出勤日数",
+  workHours: "労働時間",
+  absent: "欠勤",
+  notes: "備考",
+};
+
+/** 数式エラー検出の対象とする数値系フィールド（名前・スカウト者・備考は対象外） */
+const NUMERIC_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
+  "hourlyWage",
+  "totalSales",
+  "payment",
+  "honshimeiCount",
+  "honshimeiGroupCount",
+  "customerCount",
+  "jounaiCount",
+  "douhan",
+  "workDays",
+  "workHours",
+  "absent",
+];
+
+/**
+ * シートの宣言範囲（!ref）を信用せず、実際に値が入っているセルアドレスから
+ * 真の使用範囲を求める。
+ *
+ * 実店舗のExcelファイルで、個別キャストシートの1枚だけ !ref が
+ * 「A1:EU1048572」（Excelの行上限）になっている症状を確認した
+ * （書式設定等の副作用と見られ、実データはA1:EU94相当のみ）。
+ * !ref を信用してその範囲を読み込むと、実データが数十行しか無くても
+ * 数百万セル分の配列生成を試みてブラウザが応答不能になる。
+ *
+ * SheetJSのワークシートオブジェクトは疎（値のあるセルのみキーを持つ）
+ * ため、Object.keys() は実際に埋まっているセル数に比例した計算量で済み、
+ * 宣言範囲がどれだけ巨大でも影響を受けない。
+ */
+function actualUsedRange(ws: XLSX.WorkSheet): XLSX.Range | null {
+  let maxRow = -1;
+  let maxCol = -1;
+  let minRow = Infinity;
+  let minCol = Infinity;
+  for (const key of Object.keys(ws)) {
+    if (key.startsWith("!")) continue; // !ref/!merges等のメタキーは対象外
+    const addr = XLSX.utils.decode_cell(key);
+    if (addr.r > maxRow) maxRow = addr.r;
+    if (addr.c > maxCol) maxCol = addr.c;
+    if (addr.r < minRow) minRow = addr.r;
+    if (addr.c < minCol) minCol = addr.c;
+  }
+  if (maxRow < 0) return null; // セルが1つも無い
+  return { s: { r: minRow, c: minCol }, e: { r: maxRow, c: maxCol } };
+}
+
+/**
+ * シートを安全な範囲でグリッド化する。
+ *
+ * 宣言範囲（!ref）は使わず、実際に値があるセルから求めた使用範囲
+ * （actualUsedRange）を優先する。これにより、!ref が書式設定等で
+ * 不当に膨れ上がっていても実データの取りこぼしなく安全に読み込める
+ * （宣言範囲だけを信用してクランプする方式とは異なり、行数・列数の
+ * 上限による実データの切り捨てが起こらない）。
+ *
+ * ABSOLUTE_MAX_ROWS/COLS は、実際に値のあるセルがそれ自体で
+ * その規模に達している場合（通常の業務データでは起こらない規模）に限り
+ * 発動する最終手段の安全装置。この場合のみ本当にデータを切り捨てるため
+ * truncated を立てて警告表示に使う。
+ */
+function safeGridFromSheet(ws: XLSX.WorkSheet): { grid: unknown[][]; truncated: boolean } {
+  if (!ws["!ref"]) return { grid: [], truncated: false };
+  const used = actualUsedRange(ws);
+  if (!used) return { grid: [], truncated: false };
+
+  const truncated = used.e.r + 1 > ABSOLUTE_MAX_ROWS || used.e.c + 1 > ABSOLUTE_MAX_COLS;
+  const range: XLSX.Range = truncated
+    ? { s: used.s, e: { r: Math.min(used.e.r, ABSOLUTE_MAX_ROWS - 1), c: Math.min(used.e.c, ABSOLUTE_MAX_COLS - 1) } }
+    : used;
+
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+    header: 1,
+    raw: true,
+    defval: "",
+    range,
+  });
+  return { grid, truncated };
+}
 
 function normText(v: unknown): string {
   return String(v ?? "")
@@ -290,6 +404,8 @@ export interface SheetScan {
   dataStartRow: number | null;
   dataEndRow: number | null;
   score: number;
+  /** シート範囲が異常に大きく、読み込み範囲をクランプした場合 true */
+  truncated: boolean;
 }
 
 /** ヘッダー検出済みシートからデータ行・除外行を抽出する */
@@ -334,6 +450,22 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
       continue;
     }
 
+    // 数式エラー値（#REF!等）の検出。他シート参照の数式が壊れている場合、
+    // 黙って0扱いにすると誤ったデータをそのまま保存してしまうため、
+    // どの項目が取得不能だったかを明示したうえで行ごと除外する
+    const errorFields = NUMERIC_FIELDS.filter(
+      (field) => colIndex[field] !== undefined && isFormulaErrorValue(get(cells, field))
+    );
+    if (errorFields.length > 0) {
+      const labels = errorFields.map((f) => FIELD_JA_LABELS[f]).join("・");
+      excluded.push({
+        rowNumber,
+        value: rawName,
+        reason: `数式エラーのため「${labels}」を取得できません。Excelを開いて再計算・保存し直すか、個別キャストシート等から値をご確認ください`,
+      });
+      continue;
+    }
+
     consecutiveInvalid = 0;
     rows.push({
       rowNumber,
@@ -373,27 +505,41 @@ function sheetNameScore(name: string): number {
 
 /** Excelバイナリをワークブックとして読み込む（シート解析段階） */
 export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
-  const wb = XLSX.read(buffer, { type: "array" });
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(buffer, { type: "array" });
+  } catch {
+    throw new Error(
+      "ファイル形式を読み取れませんでした。.xlsx / .xls 形式で保存されたExcelファイルかご確認のうえ、" +
+        "壊れている場合はExcelで開いて別名保存してから再度お試しください。"
+    );
+  }
   if (wb.SheetNames.length === 0) throw new Error("Excelにシートがありません");
   return wb;
 }
 
 /** 1シートを走査する（ヘッダー判定+データ抽出段階。非同期版から1枚ずつ呼ぶ） */
 export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], {
-    header: 1,
-    raw: true,
-    defval: "",
-  });
+  const { grid, truncated } = safeGridFromSheet(wb.Sheets[name]);
   const header = detectHeader(grid);
   if (!header) {
-    return { name, header: null, grid, rows: [], excluded: [], dataStartRow: null, dataEndRow: null, score: sheetNameScore(name) - 1000 };
+    return {
+      name,
+      header: null,
+      grid,
+      rows: [],
+      excluded: [],
+      dataStartRow: null,
+      dataEndRow: null,
+      score: sheetNameScore(name) - 1000,
+      truncated,
+    };
   }
   const extracted = extractRows(grid, header);
   // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
   const score =
     sheetNameScore(name) + header.knownCols * 10 + Math.min(extracted.rows.length, 50);
-  return { name, header, grid, ...extracted, score };
+  return { name, header, grid, ...extracted, score, truncated };
 }
 
 /** 走査済み全シートから採用シートを決定し、結果を組み立てる */
@@ -432,13 +578,16 @@ export function assembleParseResult(
     name: s.name,
     adopted: s === adopted,
     reason:
-      s === adopted
+      (s === adopted
         ? "給料明細シートとして採用"
         : s.header === null
           ? "ヘッダー行を検出できないため除外（設定・集計シートの可能性）"
           : s.rows.length === 0
             ? "有効なキャスト行が無いため除外"
-            : "採用シートよりスコアが低いため除外",
+            : "採用シートよりスコアが低いため除外") +
+      (s.truncated
+        ? `（データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えるため一部のみ読み込み）`
+        : ""),
     headerRowNumber: s.header ? s.header.headerRowIdx + 1 : null,
     validRows: s.rows.length,
   }));
@@ -460,6 +609,17 @@ export function assembleParseResult(
   }
   if (adopted.excluded.length > adopted.rows.length && adopted.rows.length > 0) {
     warnings.push("除外行がキャスト行より多くなっています。除外理由をご確認ください。");
+  }
+  if (adopted.truncated) {
+    warnings.push(
+      `採用シート「${adopted.name}」の実データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えているため、一部のみ読み込みました。データが途中で切れている可能性があるため、シートを分割するか管理者にご確認ください。`
+    );
+  }
+  const errorSkippedCount = adopted.excluded.filter((e) => e.reason.includes("数式エラー")).length;
+  if (errorSkippedCount > 0) {
+    warnings.push(
+      `${errorSkippedCount}件の行が数式エラー（#REF!等）のため読み込めませんでした。除外行の詳細をご確認ください。`
+    );
   }
 
   const headerCells = (adopted.grid[adopted.header.headerRowIdx] ?? []).map((v) => String(v ?? ""));
