@@ -15,6 +15,11 @@ import {
   type MigrationProgress,
   type MigrationResultSummary,
 } from "@/services/migrationService";
+import {
+  backfillRankingEligibleFrom,
+  type BackfillProgress,
+  type BackfillResult,
+} from "@/services/rankingEligibilityService";
 import { downloadBlob, timestampedFileName } from "@/lib/download";
 
 /**
@@ -42,6 +47,12 @@ export default function MigrationPage() {
 
   const [runs, setRuns] = useState<MigrationRunWithId[]>([]);
   const [runsError, setRunsError] = useState<string | null>(null);
+
+  // ランキング対象開始日の一括バックフィル（PR8で追加・初回のみ実行想定・何度実行しても安全）
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState<BackfillProgress | null>(null);
+  const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null);
+  const backfillCancelRef = useRef(false);
 
   useEffect(() => {
     if (userDoc && !owner) router.replace("/dashboard");
@@ -131,6 +142,41 @@ export default function MigrationPage() {
       });
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function onRunBackfill() {
+    if (!firebaseUser || backfillRunning) return;
+    if (
+      !window.confirm(
+        "ランキング対象開始日が未設定のキャスト全員に、既存の月別成績から自動判定した値を設定します。\n" +
+          "既に設定済み（自動・手動問わず）のキャストは変更されません。実行しますか？"
+      )
+    ) {
+      return;
+    }
+    backfillCancelRef.current = false;
+    setBackfillRunning(true);
+    setBackfillResult(null);
+    setBackfillProgress(null);
+    try {
+      const res = await backfillRankingEligibleFrom(
+        firebaseUser.uid,
+        userDoc?.displayName ?? "",
+        setBackfillProgress,
+        () => backfillCancelRef.current
+      );
+      setBackfillResult(res);
+    } catch (err) {
+      setBackfillResult({
+        total: 0,
+        updated: 0,
+        skipped: 0,
+        errors: 1,
+        errorMessages: [(err as Error).message],
+      });
+    } finally {
+      setBackfillRunning(false);
     }
   }
 
@@ -294,6 +340,45 @@ export default function MigrationPage() {
             </section>
           </>
         )}
+
+        <section className="section-card" style={{ marginBottom: 16 }}>
+          <h2 style={{ marginBottom: 10 }}>ランキング対象開始日の一括設定（初回のみ）</h2>
+          <p className="page-sub" style={{ marginBottom: 10 }}>
+            ランキングに「対象開始日（rankingEligibleFrom）」による表示制御を追加しました。
+            既存キャストのうち未設定のキャスト全員に、既存の月別成績のうち最も古い月の月初を
+            自動設定します。既に設定済み（自動・手動問わず）のキャストは変更しません。
+            何度実行しても安全です（同じキャストに二重反映されることはありません）。
+          </p>
+          <button
+            className="btn btn-primary"
+            onClick={() => void onRunBackfill()}
+            disabled={backfillRunning}
+          >
+            {backfillRunning ? "設定中…" : "ランキング対象開始日を一括設定"}
+          </button>
+          {backfillProgress && (
+            <p className="progress-note" style={{ marginTop: 10 }}>
+              {backfillProgress.done} / {backfillProgress.total} 件
+              （更新 {backfillProgress.updated} / スキップ {backfillProgress.skipped} /
+              エラー {backfillProgress.errors}）
+            </p>
+          )}
+          {backfillResult && (
+            <div
+              className={backfillResult.errors === 0 ? "info-box" : "error-box"}
+              style={{ marginTop: 12 }}
+            >
+              <strong>完了</strong>
+              <p style={{ marginTop: 6 }}>
+                対象 {backfillResult.total}件 ／ 更新 {backfillResult.updated}件 ／
+                スキップ {backfillResult.skipped}件 ／ エラー {backfillResult.errors}件
+              </p>
+              {backfillResult.errorMessages.map((m, i) => (
+                <p key={i} style={{ marginTop: 4 }}>{m}</p>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="section-card">
           <h2 style={{ marginBottom: 10 }}>移行実行履歴</h2>
