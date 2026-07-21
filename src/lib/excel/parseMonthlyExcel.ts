@@ -176,14 +176,15 @@ const MAX_CONSECUTIVE_INVALID = 5;
 /** 「異常に多い」とみなすキャスト行数 */
 const TOO_MANY_ROWS = 150;
 /**
- * シートの走査上限（行・列）。実運用スケール（キャスト数百名規模）を大きく
- * 上回る値だが、Excelの書式設定等の副作用でシート範囲（!ref）が
- * 数十万〜100万行超に膨れ上がることがある（実店舗ファイルで確認済み）。
- * これを無制限に読み込むとブラウザが応答不能になるため、実データが
- * 明らかに収まる範囲へ安全にクランプする。
+ * シートの絶対上限（行・列）。実運用スケール（キャスト数百名規模、
+ * 日次データでも年単位で数千行程度）を大幅に超える値であり、
+ * これに達するのは「実際に大量のデータがある」場合のみを想定した
+ * 最終手段の安全装置（サーキットブレーカー）。通常はこの値ではなく
+ * actualUsedRange() による実データ範囲の検出で安全性を確保する
+ * （下記コメント参照）。
  */
-const MAX_SCAN_ROWS = 2000;
-const MAX_SCAN_COLS = 200;
+const ABSOLUTE_MAX_ROWS = 20000;
+const ABSOLUTE_MAX_COLS = 500;
 
 /** 数式エラー値（#REF!等）の判定パターン */
 const FORMULA_ERROR_PATTERN = /^#(REF|VALUE|DIV\/0|NAME|N\/A|NULL|NUM|ERROR)!?\??$/i;
@@ -226,23 +227,65 @@ const NUMERIC_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
 ];
 
 /**
+ * シートの宣言範囲（!ref）を信用せず、実際に値が入っているセルアドレスから
+ * 真の使用範囲を求める。
+ *
+ * 実店舗のExcelファイルで、個別キャストシートの1枚だけ !ref が
+ * 「A1:EU1048572」（Excelの行上限）になっている症状を確認した
+ * （書式設定等の副作用と見られ、実データはA1:EU94相当のみ）。
+ * !ref を信用してその範囲を読み込むと、実データが数十行しか無くても
+ * 数百万セル分の配列生成を試みてブラウザが応答不能になる。
+ *
+ * SheetJSのワークシートオブジェクトは疎（値のあるセルのみキーを持つ）
+ * ため、Object.keys() は実際に埋まっているセル数に比例した計算量で済み、
+ * 宣言範囲がどれだけ巨大でも影響を受けない。
+ */
+function actualUsedRange(ws: XLSX.WorkSheet): XLSX.Range | null {
+  let maxRow = -1;
+  let maxCol = -1;
+  let minRow = Infinity;
+  let minCol = Infinity;
+  for (const key of Object.keys(ws)) {
+    if (key.startsWith("!")) continue; // !ref/!merges等のメタキーは対象外
+    const addr = XLSX.utils.decode_cell(key);
+    if (addr.r > maxRow) maxRow = addr.r;
+    if (addr.c > maxCol) maxCol = addr.c;
+    if (addr.r < minRow) minRow = addr.r;
+    if (addr.c < minCol) minCol = addr.c;
+  }
+  if (maxRow < 0) return null; // セルが1つも無い
+  return { s: { r: minRow, c: minCol }, e: { r: maxRow, c: maxCol } };
+}
+
+/**
  * シートを安全な範囲でグリッド化する。
- * シート範囲（!ref）が異常に大きい場合は MAX_SCAN_ROWS/MAX_SCAN_COLS
- * までにクランプして読み込み、実データを保ったまま暴走を防ぐ。
+ *
+ * 宣言範囲（!ref）は使わず、実際に値があるセルから求めた使用範囲
+ * （actualUsedRange）を優先する。これにより、!ref が書式設定等で
+ * 不当に膨れ上がっていても実データの取りこぼしなく安全に読み込める
+ * （宣言範囲だけを信用してクランプする方式とは異なり、行数・列数の
+ * 上限による実データの切り捨てが起こらない）。
+ *
+ * ABSOLUTE_MAX_ROWS/COLS は、実際に値のあるセルがそれ自体で
+ * その規模に達している場合（通常の業務データでは起こらない規模）に限り
+ * 発動する最終手段の安全装置。この場合のみ本当にデータを切り捨てるため
+ * truncated を立てて警告表示に使う。
  */
 function safeGridFromSheet(ws: XLSX.WorkSheet): { grid: unknown[][]; truncated: boolean } {
   if (!ws["!ref"]) return { grid: [], truncated: false };
-  const range = XLSX.utils.decode_range(ws["!ref"]);
-  const truncated = range.e.r + 1 > MAX_SCAN_ROWS || range.e.c + 1 > MAX_SCAN_COLS;
-  if (truncated) {
-    range.e.r = Math.min(range.e.r, MAX_SCAN_ROWS - 1);
-    range.e.c = Math.min(range.e.c, MAX_SCAN_COLS - 1);
-  }
+  const used = actualUsedRange(ws);
+  if (!used) return { grid: [], truncated: false };
+
+  const truncated = used.e.r + 1 > ABSOLUTE_MAX_ROWS || used.e.c + 1 > ABSOLUTE_MAX_COLS;
+  const range: XLSX.Range = truncated
+    ? { s: used.s, e: { r: Math.min(used.e.r, ABSOLUTE_MAX_ROWS - 1), c: Math.min(used.e.c, ABSOLUTE_MAX_COLS - 1) } }
+    : used;
+
   const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, {
     header: 1,
     raw: true,
     defval: "",
-    range: truncated ? range : undefined,
+    range,
   });
   return { grid, truncated };
 }
@@ -543,7 +586,7 @@ export function assembleParseResult(
             ? "有効なキャスト行が無いため除外"
             : "採用シートよりスコアが低いため除外") +
       (s.truncated
-        ? `（シート範囲が異常に大きいため先頭${MAX_SCAN_ROWS}行までで読み込み）`
+        ? `（データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えるため一部のみ読み込み）`
         : ""),
     headerRowNumber: s.header ? s.header.headerRowIdx + 1 : null,
     validRows: s.rows.length,
@@ -569,7 +612,7 @@ export function assembleParseResult(
   }
   if (adopted.truncated) {
     warnings.push(
-      `採用シート「${adopted.name}」の範囲が異常に大きい（Excelの書式設定等が原因の可能性）ため、先頭${MAX_SCAN_ROWS}行までで読み込みました。データが途中で切れていないかご確認ください。`
+      `採用シート「${adopted.name}」の実データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えているため、一部のみ読み込みました。データが途中で切れている可能性があるため、シートを分割するか管理者にご確認ください。`
     );
   }
   const errorSkippedCount = adopted.excluded.filter((e) => e.reason.includes("数式エラー")).length;

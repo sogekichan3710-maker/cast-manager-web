@@ -95,65 +95,96 @@ describe("parseMonthlyExcel: REGINA「一覧」シートの実列構成", () => 
   });
 });
 
-describe("parseMonthlyExcel: 異常に大きいシート範囲への対応（実ファイルで発見した根本原因）", () => {
-  /** 実データは数行だけだが、!ref を強制的に巨大化させて実ファイルの症状を再現する */
-  function makeBloatedRangeWorkbook(bloatedRows: number): ArrayBuffer {
+/** !ref を巨大化させた「にこ」シート相当のワークシートを作る（実データはA1:I4相当のみ） */
+function makeBloatedNikoSheet(bloatedRows: number): XLSX.WorkSheet {
+  const nikoRows: unknown[][] = [
+    ["", "", "", "", "", "", "", "キャスト名", ""],
+    [6, "", "", "", "", "", "", "にこ", ""],
+    ["日", "曜日", "時給", "IN", "OUT", "労時間", "日当", "同伴組", ""],
+    [46174, "", 15000, "", "", "", 0, "", ""],
+  ];
+  const niko = XLSX.utils.aoa_to_sheet(nikoRows);
+  // 実ファイルで確認された症状の再現: シート範囲(!ref)だけが異常に大きい
+  // （実データはA1:I4相当だが、書式設定等の副作用でrefが巨大化する）
+  niko["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: bloatedRows - 1, c: 130 } });
+  return niko;
+}
+
+describe("parseMonthlyExcel: 宣言範囲(!ref)だけが異常に大きいシートへの対応（実ファイルで発見した根本原因）", () => {
+  /**
+   * scanSheet はワークブックを直接受け取るため、XLSX.write によるファイル
+   * 直列化を経由せずにテストできる。実ファイルとまったく同じ規模
+   * （Excelの行上限 1,048,572）で検証する（直列化を挟まないため高速）。
+   */
+  it("実データを保ったまま高速に読み込み、truncatedにはならない（データの取りこぼしが無いことの確認）", () => {
+    const wb: XLSX.WorkBook = {
+      SheetNames: ["にこ"],
+      Sheets: { にこ: makeBloatedNikoSheet(1_048_572) },
+    };
+    const t0 = Date.now();
+    const scan = scanSheet(wb, "にこ");
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(scan.truncated).toBe(false); // 宣言範囲は巨大でも実データは失われていない
+    expect(scan.grid.length).toBe(4); // 実データの4行のみ（宣言範囲の104万行ではない）
+    expect(scan.grid[1]?.[7]).toBe("にこ"); // 実データの値も正しく取得できている
+  });
+
+  /**
+   * parseMonthlyExcel はArrayBufferから始まるため、テスト用ワークブックの
+   * 直列化(XLSX.write)が必要になる。直列化自体のコストが宣言範囲の大きさに
+   * 比例して増えるため（テストツール側の制約であり本修正とは無関係）、
+   * ここでは「実データの数百倍」で十分に趣旨を再現できる値を使う。
+   */
+  function makeBloatedRefWorkbookBuffer(bloatedRows: number): ArrayBuffer {
     const wb = XLSX.utils.book_new();
-    const normalSheet = XLSX.utils.aoa_to_sheet(reginaIchiranRows());
-    XLSX.utils.book_append_sheet(wb, normalSheet, "一覧");
-
-    const bloatedRows2: unknown[][] = [
-      ["", "", "", "", "", "", "", "キャスト名", ""],
-      [6, "", "", "", "", "", "", "にこ", ""],
-      ["日", "曜日", "時給", "IN", "OUT", "労時間", "日当", "同伴組", ""],
-      [46174, "", 15000, "", "", "", 0, "", ""],
-    ];
-    const bloated = XLSX.utils.aoa_to_sheet(bloatedRows2);
-    // 実ファイルで確認された症状の再現: シート範囲(!ref)だけが異常に大きい
-    // （実データはA1:I4相当だが、書式設定等の副作用でrefが巨大化する）
-    bloated["!ref"] = XLSX.utils.encode_range({
-      s: { r: 0, c: 0 },
-      e: { r: bloatedRows - 1, c: 130 },
-    });
-    XLSX.utils.book_append_sheet(wb, bloated, "にこ");
-
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(reginaIchiranRows()), "一覧");
+    XLSX.utils.book_append_sheet(wb, makeBloatedNikoSheet(bloatedRows), "にこ");
     return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
   }
 
-  it("シート範囲が上限を超える場合はクランプして読み込み、truncatedを立てる", () => {
-    const buf = makeBloatedRangeWorkbook(3000); // MAX_SCAN_ROWS(2000)を超える宣言範囲
-    const wb = readWorkbook(buf);
-    const scan = scanSheet(wb, "にこ");
-    expect(scan.truncated).toBe(true);
-    expect(scan.grid.length).toBeLessThanOrEqual(2000);
-  });
-
-  it("正常範囲のシートはtruncatedにならない", () => {
-    const buf = makeBloatedRangeWorkbook(3000);
+  it("正常範囲のシートは影響を受けない", () => {
+    const buf = makeBloatedRefWorkbookBuffer(5000);
     const wb = readWorkbook(buf);
     const scan = scanSheet(wb, "一覧");
     expect(scan.truncated).toBe(false);
   });
 
-  it("巨大範囲シートが存在しても解析全体がタイムアウトせず完了し、正しいシートを採用する", () => {
-    const buf = makeBloatedRangeWorkbook(3000);
+  it("巨大な宣言範囲のシートが存在しても解析全体が高速に完了し、正しいシートを採用する", () => {
+    const buf = makeBloatedRefWorkbookBuffer(5000);
+    const t0 = Date.now();
     const result = parseMonthlyExcel(buf);
+    expect(Date.now() - t0).toBeLessThan(3000);
     expect(result.sheetName).toBe("一覧");
     expect(result.rows.map((r) => r.name)).toEqual(["せいら", "ももか"]);
+    // 宣言範囲の膨張だけでは警告を出さない（実データは失われていないため）
+    expect(result.warnings).toEqual([]);
   });
+});
 
-  it("採用シート自体が巨大範囲の場合は警告とシート情報に理由が表示される", () => {
-    // 「一覧」を巨大範囲にして、採用シート自体がtruncatedになるケース
+describe("parseMonthlyExcel: 実データ自体が絶対上限を超える場合のみtruncatedになる", () => {
+  /**
+   * !ref の宣言範囲ではなく、実際に値を持つセルが絶対上限を超えるケース
+   * （非常にまれだが、離れた場所に誤って入力された値がある等）。
+   * この場合のみ本当にデータが失われうるため truncated を立てて警告する。
+   */
+  function makeGenuinelyLargeWorkbook(): ArrayBuffer {
     const wb = XLSX.utils.book_new();
     const ichiran = XLSX.utils.aoa_to_sheet(reginaIchiranRows());
-    ichiran["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 2999, c: 26 } });
+    // 絶対上限（20000行）を超える位置に実際の値を1つ置く
+    XLSX.utils.sheet_add_aoa(ichiran, [["はぐれ値"]], { origin: "A25000" });
     XLSX.utils.book_append_sheet(wb, ichiran, "一覧");
-    const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+    return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+  }
 
+  it("絶対上限を超える実データがある場合はtruncatedになり、警告とシート情報に理由が表示される", () => {
+    const buf = makeGenuinelyLargeWorkbook();
     const result = parseMonthlyExcel(buf);
-    expect(result.warnings.some((w) => w.includes("先頭") && w.includes("行までで読み込み"))).toBe(true);
+    expect(result.sheetName).toBe("一覧");
+    // 通常のキャスト行は失われていない
+    expect(result.rows.map((r) => r.name)).toEqual(["せいら", "ももか"]);
+    expect(result.warnings.some((w) => w.includes("上限") && w.includes("行"))).toBe(true);
     const sheetInfo = result.sheets.find((s) => s.name === "一覧");
-    expect(sheetInfo?.reason).toContain("読み込み");
+    expect(sheetInfo?.reason).toContain("上限");
   });
 });
 
