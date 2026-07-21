@@ -195,7 +195,15 @@ export default function DashboardPage() {
             <div className="dash-columns">
               {/* ── 面談アラート ── */}
               <section className="detail-card">
-                <h2 className="detail-heading">⚠️ 面談アラート（30日以上 or 未面談）</h2>
+                <div className="dash-section-head">
+                  <h2 className="detail-heading">⚠️ 面談アラート（30日以上 or 未面談）</h2>
+                  <Link
+                    href={`/dashboard/overdue-interviews?store=${storeFilter}`}
+                    className="dash-detail-link"
+                  >
+                    詳細を見る →
+                  </Link>
+                </div>
                 {overdue.length === 0 ? (
                   <p className="empty-note" style={{ color: "var(--green)" }}>
                     全員面談済み ✓（1ヶ月以内）

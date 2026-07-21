@@ -1,4 +1,4 @@
-import { realHourlyWage, type MonthlyResultWithId } from "@/types";
+import { realHourlyWage, type CastWithId, type MonthlyResultWithId } from "@/types";
 
 /**
  * ランキング7カテゴリ（既存ローカル版 _RANK_CATS の移植）。
@@ -80,26 +80,61 @@ export const RANK_CATS: RankCat[] = [
 ];
 
 /**
+ * 実績（対象月のmonthlyResults）が1件も無いキャスト用のプレースホルダ。
+ * 表示専用のダミーレコードであり、Firestoreには一切書き込まない。
+ * 数値項目はすべて0（実績なし・未入力であることが一目で分かるようにするため）。
+ */
+function emptyResultFor(cast: Pick<CastWithId, "id" | "storeId">): MonthlyResultWithId {
+  return {
+    id: `__no_record__${cast.id}`,
+    castId: cast.id,
+    storeId: cast.storeId,
+    month: "",
+    totalSales: 0,
+    payment: 0,
+    honshimeiCount: 0,
+    honshimeiGroupCount: 0,
+    customerCount: 0,
+    jounaiCount: 0,
+    douhan: 0,
+    workDays: 0,
+    workHours: 0,
+    absent: 0,
+    notes: "",
+    batchId: null,
+    createdAt: null as unknown as MonthlyResultWithId["createdAt"],
+    createdBy: "",
+    updatedAt: null as unknown as MonthlyResultWithId["updatedAt"],
+    updatedBy: "",
+  };
+}
+
+/**
  * ランキング集計（旧版 renderRanking の移植）。
+ * PR7で対象を「在籍キャスト全員」へ拡張: 呼び出し側が渡す activeCasts
+ * （休職・退店・アーカイブ済みは呼び出し側で除外すること）全員を対象とし、
+ * 対象月の実績が無いキャストも0埋めのプレースホルダで表示する
+ * （誰が未入力・未実績なのか一目で分かるようにするため）。
  * - 同一castIdの重複排除（idが大きいものを優先 = 旧版と同一）
- * - key > 0 のみ対象（旧版と同一）
- * - key降順、同値時は stageName 参照用に castId で安定ソート（要件: 並び順の安定化）
+ * - key降順、同値時は castId で安定ソート（要件: 並び順の安定化）。
+ *   0（実績なし）は降順ソートの結果として自然に末尾へ並ぶ
  * - 全件返す（PR6: 従来のTOP15打ち切りを廃止。UI側でスクロール表示する）
  */
 export function buildRanking(
   results: MonthlyResultWithId[],
   cat: RankCat,
-  validCastIds: Set<string>
+  activeCasts: Array<Pick<CastWithId, "id" | "storeId">>
 ): MonthlyResultWithId[] {
+  const validCastIds = new Set(activeCasts.map((c) => c.id));
   const dedup = new Map<string, MonthlyResultWithId>();
   results.forEach((r) => {
     if (!r.castId) return;
-    if (!validCastIds.has(r.castId)) return; // 孤立レコード除去（旧版と同一）
+    if (!validCastIds.has(r.castId)) return; // 対象外（他店舗・休職・退店・アーカイブ等）の孤立レコード除去
     const e = dedup.get(r.castId);
     if (!e || (r.id || "") > (e.id || "")) dedup.set(r.castId, r);
   });
-  return [...dedup.values()]
-    .filter((r) => cat.key(r) !== -Infinity && cat.key(r) > 0)
+  return activeCasts
+    .map((c) => dedup.get(c.id) ?? emptyResultFor(c))
     .sort((a, b) => {
       const d = cat.key(b) - cat.key(a);
       if (d !== 0) return d;

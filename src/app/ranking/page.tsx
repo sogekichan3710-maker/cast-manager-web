@@ -68,11 +68,17 @@ export default function RankingPage() {
     return (id: string) => m.get(id) ?? null;
   }, [casts]);
 
+  // ランキング対象は在籍キャスト全員（休職・退店・アーカイブ済みは除外）
+  const activeCasts = useMemo(
+    () => casts.filter((c) => c.status === "在籍" && !c.archived),
+    [casts]
+  );
+
   const cat = RANK_CATS[catIdx];
-  const ranked = useMemo(() => {
-    const validIds = new Set(casts.map((c) => c.id));
-    return buildRanking(results, cat, validIds);
-  }, [results, cat, casts]);
+  const ranked = useMemo(
+    () => buildRanking(results, cat, activeCasts),
+    [results, cat, activeCasts]
+  );
 
   return (
     <div className="app-shell">
@@ -81,7 +87,9 @@ export default function RankingPage() {
         <div className="page-head">
           <div>
             <h1 className="page-title">ランキング — {monthToJa(month)}</h1>
-            <p className="page-sub">全件表示（対象月に実績のあるキャスト・{ranked.length}名）</p>
+            <p className="page-sub">
+              在籍キャスト全員を表示（実績なしは末尾・{ranked.length}名）
+            </p>
           </div>
         </div>
 
@@ -129,9 +137,7 @@ export default function RankingPage() {
             <p>ランキングを集計しています…</p>
           </div>
         ) : ranked.length === 0 ? (
-          <div className="info-box">
-            {monthToJa(month)}のデータがありません。月別成績を入力するとランキングが表示されます。
-          </div>
+          <div className="info-box">対象店舗に在籍中のキャストがいません。</div>
         ) : (
           <section className="detail-card" style={{ maxWidth: 520 }}>
             <h2 className="detail-heading">
