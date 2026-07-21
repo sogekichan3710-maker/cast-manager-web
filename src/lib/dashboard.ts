@@ -317,11 +317,17 @@ export function calcFollowHigh(params: {
     .filter((x) => !!x.cast);
 }
 
-/** 次回面談が近い（7日以内・旧版と同一: today <= nextDate <= today+7日、上位5件） */
+/**
+ * 次回面談が近い（7日以内・旧版と同一: today <= nextDate <= today+7日）。
+ * ダッシュボードのカードでは上位5件（旧版と同一のlimit既定値）のみ表示するが、
+ * PR6の一覧ページからは limit を大きくして全件を取得できるようにしている
+ * （7日以内という対象範囲自体は変更しない）。
+ */
 export function calcUpcomingInterviews(params: {
   casts: CastWithId[];
   interviews: InterviewWithId[];
   now?: Date;
+  limit?: number;
 }): Array<{ cast: CastWithId; interview: InterviewWithId }> {
   const now = params.now ?? new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -337,7 +343,7 @@ export function calcUpcomingInterviews(params: {
       return d >= today && d <= today + 7 * 864e5;
     })
     .sort((a, b) => (a.nextDate || "").localeCompare(b.nextDate || ""))
-    .slice(0, 5)
+    .slice(0, params.limit ?? 5)
     .map((iv) => ({ cast: castOf.get(iv.castId)!, interview: iv }))
     .filter((x) => !!x.cast);
 }

@@ -24,6 +24,8 @@ export interface ExcelMonthlyRow {
   name: string;
   /** 時給列が存在しない場合は null（時給変更判定をスキップ） */
   hourlyWage: number | null;
+  /** スカウト者（PR6で追加）。列が存在しない場合は空文字 */
+  scoutedBy: string;
   totalSales: number;
   payment: number;
   honshimeiCount: number;
@@ -83,6 +85,7 @@ export interface ExcelParseResult {
 const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber">, string[]> = {
   name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
+  scoutedBy: ["スカウト者", "スカウト", "スカウト担当", "scoutedby", "scout"],
   totalSales: ["総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
   // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
   // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
@@ -336,6 +339,7 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
       rowNumber,
       name: rawName,
       hourlyWage: hasWageCol ? Math.round(toNum(get(cells, "hourlyWage"))) : null,
+      scoutedBy: String(get(cells, "scoutedBy") ?? "").trim(),
       totalSales: Math.round(toNum(get(cells, "totalSales"))),
       payment: Math.round(toNum(get(cells, "payment"))),
       honshimeiCount: to2(toNum(get(cells, "honshimeiCount"))),

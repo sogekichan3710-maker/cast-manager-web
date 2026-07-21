@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { AppHeader } from "@/components/AppHeader";
+import { DiffAmount } from "@/components/DiffAmount";
 import { MonthlyResultFormModal } from "@/components/MonthlyResultFormModal";
 import { useCasts } from "@/hooks/useCasts";
+import { lastUpdateAt, lastUpdateSource } from "@/lib/monthlyResultDiff";
 import { useStores } from "@/hooks/useStores";
 import {
   deleteMonthlyResult,
@@ -14,7 +16,6 @@ import {
 import {
   ALL_STORES_FILTER,
   currentMonth,
-  fmtDiff,
   isAdminOrAbove,
   monthToJa,
   payDiff,
@@ -221,7 +222,7 @@ export default function MonthlyPage() {
           </div>
         ) : (
           <div className="table-wrap">
-            <table className="data-table" style={{ minWidth: 900 }}>
+            <table className="data-table" style={{ minWidth: 980 }}>
               <thead>
                 <tr>
                   <th>キャスト</th>
@@ -235,6 +236,7 @@ export default function MonthlyPage() {
                   <th className="num">同伴</th>
                   <th className="num">出勤日数</th>
                   <th className="num">出勤時間</th>
+                  <th>最終更新</th>
                   <th></th>
                 </tr>
               </thead>
@@ -248,6 +250,10 @@ export default function MonthlyPage() {
                   const rw = realHourlyWage(r.payment, r.workHours, r.workDays);
                   // 既存版と同一: 目標達成で緑・太字
                   const overTarget = !!c && r.totalSales >= (c.targetSales || 0) && (c.targetSales || 0) > 0;
+                  // 毎日/飛び飛びのExcel運用対応（PR5）: 最終更新がExcelインポートか
+                  // 手動編集かを表示する（PR6でmonthly一覧にも可視化）
+                  const updSrc = lastUpdateSource(r);
+                  const updAt = lastUpdateAt(r);
                   return (
                     <tr
                       key={r.id}
@@ -273,8 +279,12 @@ export default function MonthlyPage() {
                       <td className="num" style={{ color: "var(--acc2)" }}>
                         {rw != null ? "¥" + rw.toLocaleString() : "-"}
                       </td>
-                      <td className="num">{fmtDiff(pr)}</td>
-                      <td className="num">{fmtDiff(hr)}</td>
+                      <td className="num">
+                        <DiffAmount value={pr} />
+                      </td>
+                      <td className="num">
+                        <DiffAmount value={hr} />
+                      </td>
                       <td className="num" style={{ color: "var(--acc2)" }}>
                         {r.honshimeiCount || 0}
                       </td>
@@ -287,6 +297,15 @@ export default function MonthlyPage() {
                           : r.workDays
                             ? (r.workDays * 4.5).toFixed(1) + "h*"
                             : "-"}
+                      </td>
+                      <td
+                        className="dim"
+                        style={{ fontSize: 11, whiteSpace: "nowrap" }}
+                        title={updAt ? updAt.toDate().toLocaleString("ja-JP") : undefined}
+                      >
+                        {updAt
+                          ? `${updSrc} ${updAt.toDate().toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}`
+                          : "-"}
                       </td>
                       <td onClick={(e) => e.stopPropagation() /* ボタン操作は行遷移させない */}>
                         {canEdit && (

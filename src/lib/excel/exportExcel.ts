@@ -54,6 +54,7 @@ export function buildExportWorkbook(data: ExportData): XLSX.WorkBook {
     電話: c.phone,
     LINE: c.line,
     担当者: c.manager,
+    スカウト者: c.scoutedBy,
     目標売上: c.targetSales,
     目標本指名: c.targetHonmei,
     目標同伴: c.targetDouhan,

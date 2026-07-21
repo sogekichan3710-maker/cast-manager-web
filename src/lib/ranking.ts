@@ -84,7 +84,7 @@ export const RANK_CATS: RankCat[] = [
  * - 同一castIdの重複排除（idが大きいものを優先 = 旧版と同一）
  * - key > 0 のみ対象（旧版と同一）
  * - key降順、同値時は stageName 参照用に castId で安定ソート（要件: 並び順の安定化）
- * - TOP15
+ * - 全件返す（PR6: 従来のTOP15打ち切りを廃止。UI側でスクロール表示する）
  */
 export function buildRanking(
   results: MonthlyResultWithId[],
@@ -104,6 +104,5 @@ export function buildRanking(
       const d = cat.key(b) - cat.key(a);
       if (d !== 0) return d;
       return a.castId.localeCompare(b.castId); // 同値時の安定順
-    })
-    .slice(0, 15);
+    });
 }

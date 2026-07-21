@@ -81,7 +81,7 @@ export default function RankingPage() {
         <div className="page-head">
           <div>
             <h1 className="page-title">ランキング — {monthToJa(month)}</h1>
-            <p className="page-sub">各カテゴリTOP15（対象月に実績のあるキャスト）</p>
+            <p className="page-sub">全件表示（対象月に実績のあるキャスト・{ranked.length}名）</p>
           </div>
         </div>
 
@@ -134,28 +134,32 @@ export default function RankingPage() {
           </div>
         ) : (
           <section className="detail-card" style={{ maxWidth: 520 }}>
-            <h2 className="detail-heading">{cat.label} ランキング</h2>
-            {ranked.map((r, i) => {
-              const c = castOf(r.castId);
-              const name = c?.stageName ?? "(不明)";
-              const val = cat.key(r);
-              const sub = cat.sub ? cat.sub(r) : null;
-              const medal = i === 0 ? "rank-1" : i === 1 ? "rank-2" : i === 2 ? "rank-3" : "";
-              return (
-                <Link
-                  key={r.castId}
-                  href={c ? `/casts/${c.id}` : "#"}
-                  className="rank-row-link"
-                >
-                  <span className={`rank-num ${medal}`}>{i + 1}</span>
-                  <span className="rank-name">{name}</span>
-                  <span className="rank-val">
-                    {cat.fmt(val)}
-                    {sub && <span className="rank-sub">{sub}</span>}
-                  </span>
-                </Link>
-              );
-            })}
+            <h2 className="detail-heading">
+              {cat.label} ランキング（{ranked.length}名）
+            </h2>
+            <div className="rank-list-scroll">
+              {ranked.map((r, i) => {
+                const c = castOf(r.castId);
+                const name = c?.stageName ?? "(不明)";
+                const val = cat.key(r);
+                const sub = cat.sub ? cat.sub(r) : null;
+                const medal = i === 0 ? "rank-1" : i === 1 ? "rank-2" : i === 2 ? "rank-3" : "";
+                return (
+                  <Link
+                    key={r.castId}
+                    href={c ? `/casts/${c.id}` : "#"}
+                    className="rank-row-link"
+                  >
+                    <span className={`rank-num ${medal}`}>{i + 1}</span>
+                    <span className="rank-name">{name}</span>
+                    <span className="rank-val">
+                      {cat.fmt(val)}
+                      {sub && <span className="rank-sub">{sub}</span>}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
           </section>
         )}
       </main>

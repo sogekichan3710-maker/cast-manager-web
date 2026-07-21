@@ -80,6 +80,8 @@ export interface CastDoc {
   phone: string;
   line: string;
   manager: string;
+  /** スカウト者（PR6で追加。担当者とは別項目。旧データには存在しない場合がある） */
+  scoutedBy: string;
   targetSales: number;
   targetHonmei: number;
   targetDouhan: number;

@@ -142,6 +142,7 @@ export default function CastDetailPage() {
                 <Item label="電話番号" value={cast.phone} />
                 <Item label="LINE" value={cast.line} />
                 <Item label="担当者" value={cast.manager} />
+                <Item label="スカウト者" value={cast.scoutedBy} />
                 <Item label="保証" value={cast.guarantee} />
                 <Item
                   label="目標売上"

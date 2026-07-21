@@ -14,6 +14,7 @@ function row(name: string, rowNumber = 2, hourlyWage: number | null = 5000): Exc
     rowNumber,
     name,
     hourlyWage,
+    scoutedBy: "",
     totalSales: 1000000,
     payment: 500000,
     honshimeiCount: 5,

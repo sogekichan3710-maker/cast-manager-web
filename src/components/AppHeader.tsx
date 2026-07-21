@@ -24,6 +24,7 @@ export function AppHeader() {
     ...(owner ? [{ href: "/stores", label: "店舗管理" }] : []),
     ...(owner ? [{ href: "/admin/users", label: "ユーザー管理" }] : []),
     ...(owner ? [{ href: "/admin/audit", label: "監査ログ" }] : []),
+    { href: "/settings", label: "設定" },
   ];
 
   return (

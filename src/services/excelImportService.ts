@@ -241,6 +241,7 @@ export async function executeExcelImport(
               phone: "",
               line: "",
               manager: "",
+              scoutedBy: d.row.scoutedBy.trim(),
               targetSales: 0,
               targetHonmei: 0,
               targetDouhan: 0,
@@ -265,6 +266,34 @@ export async function executeExcelImport(
           });
         }
         if (!castId) throw new Error(`行${d.row.rowNumber}「${d.row.name}」: 紐付け先キャストが未選択です`);
+
+        // スカウト者の更新（既存キャストのみ。新規作成時は上のtx.setで設定済み）。
+        // Excel側が空欄の行では既存の手入力値を消さないよう、値がある場合のみ更新する
+        const scoutedByFromExcel = d.row.scoutedBy.trim();
+        if (d.action !== "new" && scoutedByFromExcel) {
+          const castRef = doc(db, "casts", castId);
+          const scoutResult = await runTransaction(db, async (tx) => {
+            const snap = await tx.get(castRef);
+            if (!snap.exists()) throw new Error("キャストが見つかりません");
+            const current = (snap.data() as { scoutedBy?: string }).scoutedBy ?? "";
+            if (current === scoutedByFromExcel) return null;
+            tx.update(castRef, {
+              scoutedBy: scoutedByFromExcel,
+              updatedAt: serverTimestamp(),
+              updatedBy: actorUid,
+            });
+            return { before: current, after: scoutedByFromExcel };
+          });
+          if (scoutResult) {
+            changes.push({
+              type: "cast-updated",
+              collection: "casts",
+              docId: castId,
+              before: { scoutedBy: scoutResult.before },
+              after: { scoutedBy: scoutResult.after },
+            });
+          }
+        }
 
         // 時給変更（casts更新 + wageHistory追記を同一トランザクションで）
         if (d.action === "wage-change") {

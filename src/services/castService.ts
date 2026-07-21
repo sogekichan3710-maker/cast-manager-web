@@ -114,6 +114,8 @@ export interface CastInput {
   phone: string;
   line: string;
   manager: string;
+  /** スカウト者（担当者とは別項目） */
+  scoutedBy: string;
   targetSales: number;
   targetHonmei: number;
   targetDouhan: number;
@@ -139,6 +141,7 @@ export function emptyCastInput(storeId: string): CastInput {
     phone: "",
     line: "",
     manager: "",
+    scoutedBy: "",
     targetSales: 0,
     targetHonmei: 0,
     targetDouhan: 0,
@@ -165,6 +168,7 @@ export function castToInput(cast: CastWithId): CastInput {
     phone: cast.phone ?? "",
     line: cast.line ?? "",
     manager: cast.manager ?? "",
+    scoutedBy: cast.scoutedBy ?? "",
     targetSales: cast.targetSales ?? 0,
     targetHonmei: cast.targetHonmei ?? 0,
     targetDouhan: cast.targetDouhan ?? 0,
@@ -220,6 +224,7 @@ function normalizeInput(input: CastInput) {
     phone: input.phone.trim(),
     line: input.line.trim(),
     manager: input.manager.trim(),
+    scoutedBy: input.scoutedBy.trim(),
     targetSales: Math.round(input.targetSales),
     targetHonmei: Math.round(input.targetHonmei),
     targetDouhan: Math.round(input.targetDouhan),
@@ -331,6 +336,7 @@ function castBusinessFields(c: CastDoc): Record<string, unknown> {
     phone: c.phone,
     line: c.line,
     manager: c.manager,
+    scoutedBy: c.scoutedBy,
     targetSales: c.targetSales,
     targetHonmei: c.targetHonmei,
     targetDouhan: c.targetDouhan,

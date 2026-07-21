@@ -233,6 +233,14 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
               />
             </div>
             <div className="form-group">
+              <label>スカウト者</label>
+              <input
+                className="form-input"
+                value={input.scoutedBy}
+                onChange={(e) => set("scoutedBy", e.target.value)}
+              />
+            </div>
+            <div className="form-group">
               <label>目標売上（円）</label>
               <input
                 className="form-input"

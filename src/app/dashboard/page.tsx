@@ -145,9 +145,17 @@ export default function DashboardPage() {
                 label="今月売上"
                 value={`¥${kpi.tSales.toLocaleString()}`}
                 sub={
-                  kpi.salesDiffPct != null
-                    ? `前月比 ${kpi.salesDiffPct >= 0 ? "+" : ""}${kpi.salesDiffPct}%`
-                    : "前月データなし"
+                  kpi.salesDiffPct != null ? (
+                    <>
+                      前月比{" "}
+                      <span style={kpi.salesDiffPct < 0 ? { color: "var(--red)" } : undefined}>
+                        {kpi.salesDiffPct >= 0 ? "+" : ""}
+                        {kpi.salesDiffPct}%
+                      </span>
+                    </>
+                  ) : (
+                    "前月データなし"
+                  )
                 }
                 green
               />
@@ -236,7 +244,15 @@ export default function DashboardPage() {
 
               {/* ── フォロー高 ── */}
               <section className="detail-card">
-                <h2 className="detail-heading">🚨 フォロー必要度「高」</h2>
+                <div className="dash-section-head">
+                  <h2 className="detail-heading">🚨 フォロー必要度「高」</h2>
+                  <Link
+                    href={`/dashboard/follow-high?store=${storeFilter}`}
+                    className="dash-detail-link"
+                  >
+                    詳細を見る →
+                  </Link>
+                </div>
                 {followHigh.length === 0 ? (
                   <p className="empty-note">該当なし</p>
                 ) : (
@@ -255,7 +271,15 @@ export default function DashboardPage() {
 
               {/* ── 次回面談予定 ── */}
               <section className="detail-card">
-                <h2 className="detail-heading">📅 次回面談予定（7日以内）</h2>
+                <div className="dash-section-head">
+                  <h2 className="detail-heading">📅 次回面談予定（7日以内）</h2>
+                  <Link
+                    href={`/dashboard/upcoming-interviews?store=${storeFilter}`}
+                    className="dash-detail-link"
+                  >
+                    詳細を見る →
+                  </Link>
+                </div>
                 {upcoming.length === 0 ? (
                   <p className="empty-note">7日以内の予定はありません</p>
                 ) : (
@@ -277,9 +301,17 @@ export default function DashboardPage() {
 
               {/* ── 目標達成状況 ── */}
               <section className="detail-card">
-                <h2 className="detail-heading">
-                  🎯 目標達成状況（達成 {goalAchieved.length} / 未達成 {goalUnachieved.length}）
-                </h2>
+                <div className="dash-section-head">
+                  <h2 className="detail-heading">
+                    🎯 目標達成状況（達成 {goalAchieved.length} / 未達成 {goalUnachieved.length}）
+                  </h2>
+                  <Link
+                    href={`/dashboard/goal-status?store=${storeFilter}&month=${month}`}
+                    className="dash-detail-link"
+                  >
+                    詳細を見る →
+                  </Link>
+                </div>
                 {goalStatus.length === 0 ? (
                   <p className="empty-note">{monthToJa(month)}の目標が設定されていません</p>
                 ) : goalUnachieved.length === 0 ? (
@@ -305,9 +337,14 @@ export default function DashboardPage() {
 
               {/* ── 誕生日 ── */}
               <section className="detail-card">
-                <h2 className="detail-heading">
-                  🎂 誕生日（今月{bdThis.length} / 来月{bdNext.length}）
-                </h2>
+                <div className="dash-section-head">
+                  <h2 className="detail-heading">
+                    🎂 誕生日（今月{bdThis.length} / 来月{bdNext.length}）
+                  </h2>
+                  <Link href={`/dashboard/birthdays?store=${storeFilter}`} className="dash-detail-link">
+                    詳細を見る →
+                  </Link>
+                </div>
                 {bdThis.length === 0 && bdNext.length === 0 ? (
                   <p className="empty-note">今月・来月の誕生日はありません</p>
                 ) : (
@@ -378,7 +415,7 @@ function Kpi({
 }: {
   label: string;
   value: string;
-  sub?: string;
+  sub?: React.ReactNode;
   green?: boolean;
   accent?: boolean;
 }) {
