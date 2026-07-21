@@ -77,6 +77,9 @@ export default function ImportPage() {
 
   const [storeId, setStoreId] = useState("");
   const [month, setMonth] = useState(currentMonth());
+  // 対象日（任意・YYYY-MM-DD）。インポート実行日時ではなく、このデータが表す
+  // 業務上の日付（例: 7/20に6/30分のデータを取り込む場合は "2026-06-30"）。PC/iPhone共通でinput type="date"。
+  const [targetDate, setTargetDate] = useState("");
   const [fileName, setFileName] = useState("");
   const [parseResult, setParseResult] = useState<ExcelParseResult | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -228,6 +231,23 @@ export default function ImportPage() {
     analyzeControllerRef.current?.abort();
   }
 
+  /** 対象日の変更。対象月をその日付が属する月へ自動的に同期する */
+  function onTargetDateChange(v: string) {
+    setTargetDate(v);
+    if (v && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      const derivedMonth = v.slice(0, 7);
+      if (derivedMonth !== month) setMonth(derivedMonth);
+    }
+    resetPreviewOnly();
+  }
+
+  /** 対象月の変更。既に選択済みの対象日がその月に属さなくなる場合はクリアする */
+  function onMonthChange(v: string) {
+    setMonth(v);
+    if (targetDate && !targetDate.startsWith(v)) setTargetDate("");
+    resetPreviewOnly();
+  }
+
   /** 照合確認画面を作成する（キャンセル可能） */
   async function onBuildPreview() {
     if (!parseResult || !storeId || !/^\d{4}-\d{2}$/.test(month) || busy) return;
@@ -336,7 +356,7 @@ export default function ImportPage() {
       const res = await executeExcelImport(
         firebaseUser.uid,
         userDoc?.displayName ?? "",
-        { storeId, targetMonth: month, fileName, decisions, statusDecisions },
+        { storeId, targetMonth: month, targetDate: targetDate || null, fileName, decisions, statusDecisions },
         setProgress,
         () => cancelRef.current
       );
@@ -387,11 +407,17 @@ export default function ImportPage() {
               className="form-input"
               type="month"
               value={month}
-              onChange={(e) => {
-                setMonth(e.target.value);
-                resetPreviewOnly();
-              }}
+              onChange={(e) => onMonthChange(e.target.value)}
               disabled={busy}
+              aria-label="対象月"
+            />
+            <input
+              className="form-input"
+              type="date"
+              value={targetDate}
+              onChange={(e) => onTargetDateChange(e.target.value)}
+              disabled={busy}
+              aria-label="対象日（任意）"
             />
             <input
               type="file"
@@ -400,6 +426,11 @@ export default function ImportPage() {
               disabled={busy}
             />
           </div>
+          <p className="page-sub" style={{ marginTop: 8 }}>
+            対象日は任意です。実行日時ではなく、このデータが表す業務上の日付を選択してください
+            （例: 7/20に6/30分のデータを取り込む場合は6/30を選択）。未選択の場合は従来通り対象月のみで保存されます。
+            PC・iPhone・ホーム画面追加（PWA）のいずれでも日付選択が可能です。
+          </p>
 
           {(analyzing || matching) && analyzeProgress && (
             <div className="analyze-progress">
@@ -766,6 +797,7 @@ export default function ImportPage() {
         <FinalConfirmModal
           storeName={storeName(storeId)}
           month={month}
+          targetDate={targetDate}
           fileName={fileName}
           sheetName={parseResult.sheetName}
           detectedRows={parseResult.rows.length}
@@ -864,6 +896,7 @@ function BulkNewModal({
 function FinalConfirmModal({
   storeName,
   month,
+  targetDate,
   fileName,
   sheetName,
   detectedRows,
@@ -876,6 +909,7 @@ function FinalConfirmModal({
 }: {
   storeName: string;
   month: string;
+  targetDate: string;
   fileName: string;
   sheetName: string;
   detectedRows: number;
@@ -908,6 +942,7 @@ function FinalConfirmModal({
             <tbody>
               <tr><td>対象店舗</td><td>{storeName}</td></tr>
               <tr><td>対象月</td><td>{monthToJa(month)}</td></tr>
+              <tr><td>対象日</td><td>{targetDate || "未設定（対象月のみで保存）"}</td></tr>
               <tr><td>ファイル</td><td style={{ wordBreak: "break-all" }}>{fileName}</td></tr>
               <tr><td>採用シート</td><td>{sheetName}</td></tr>
               <tr><td>検出キャスト数</td><td className="num">{detectedRows}件</td></tr>

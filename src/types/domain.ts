@@ -92,6 +92,16 @@ export interface CastDoc {
   archived: boolean;
   /** Excelインポートで新規作成されたキャストのみ持つ（Batch単位ロールバック用） */
   importBatchId?: string | null;
+  /**
+   * ランキング対象開始日（PR8で追加）。この日付より前の期間のランキングには
+   * 表示しない（在籍キャスト全員表示化に伴う「まだ存在しなかった月」の誤表示を防ぐ）。
+   * - null: 未設定。自動判定前、または判定に使えるデータが無い場合はランキングで常に対象扱い
+   * - 自動設定: そのキャストの最初のデータ登録時（Excelインポート）に1回だけ設定
+   * - 手動設定: キャスト編集画面から年月日で設定可能。手動値は自動処理で上書きされない
+   * 将来の日次・週次・任意期間ランキングでもそのまま比較に使える日付型（Timestamp）で保持する
+   * （月文字列では判定しない）。
+   */
+  rankingEligibleFrom?: Timestamp | null;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -134,6 +144,15 @@ export interface MonthlyResultDoc {
   lastImportBatchId?: string | null;
   lastManualEditAt?: Timestamp | null;
   lastManualEditBy?: string | null;
+  /**
+   * 対象日（PR8で追加）。インポート実行日時ではなく、このデータが表す
+   * 業務上の日付（例: 7/20に6/30分のデータを取り込む場合は 2026-06-30）。
+   * インポート画面で任意選択。未選択のまま保存した場合は既存値を保持し、
+   * 一度も選択されていない場合は null（月単位のみで管理）。
+   * 将来の日次インポート・日別/週間/任意期間ランキングでそのまま利用できるよう
+   * 日付型（Timestamp）で保持する。
+   */
+  targetDate?: Timestamp | null;
   createdAt: Timestamp;
   createdBy: string;
   updatedAt: Timestamp;
@@ -350,6 +369,27 @@ export function monthShortLabel(month: string): string {
 export function currentMonth(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * 「YYYY-MM」の月末最終時刻（23:59:59.999・ローカルタイム）を返す。
+ * ランキング等の期間判定で「この期間の終わり」を表す汎用ヘルパー。
+ * 不正な形式は null。
+ */
+export function monthPeriodEnd(month: string): Date | null {
+  const m = month.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const mon = Number(m[2]); // 1-12
+  // 翌月の0日目 = 当月末日。時刻は23:59:59.999にして「月末まで」を包含する
+  return new Date(year, mon, 0, 23, 59, 59, 999);
+}
+
+/** 「YYYY-MM」の月初 00:00:00（ローカルタイム）を返す。不正な形式は null */
+export function monthPeriodStart(month: string): Date | null {
+  const m = month.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, 1, 0, 0, 0, 0);
 }
 
 /** 差額の表示（既存ローカル版 fmtDiff と同一挙動: 負は -¥1,234） */

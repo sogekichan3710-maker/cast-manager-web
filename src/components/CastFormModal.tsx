@@ -241,6 +241,19 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
               />
             </div>
             <div className="form-group">
+              <label>ランキング対象開始日</label>
+              <input
+                className="form-input"
+                type="date"
+                value={input.rankingEligibleFrom}
+                onChange={(e) => set("rankingEligibleFrom", e.target.value)}
+              />
+              <p className="page-sub" style={{ marginTop: 4 }}>
+                未設定の場合、初回データ登録日から自動判定されます。過去のキャストで
+                実際の在籍開始日を指定したい場合のみ入力してください。
+              </p>
+            </div>
+            <div className="form-group">
               <label>目標売上（円）</label>
               <input
                 className="form-input"

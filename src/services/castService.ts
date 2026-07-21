@@ -5,8 +5,8 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  Timestamp,
   where,
-  type Timestamp,
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
@@ -116,6 +116,11 @@ export interface CastInput {
   manager: string;
   /** スカウト者（担当者とは別項目） */
   scoutedBy: string;
+  /**
+   * ランキング対象開始日（YYYY-MM-DD・空文字=未設定）。
+   * 未設定の場合は自動判定値（初回データ登録日）が使われる。
+   */
+  rankingEligibleFrom: string;
   targetSales: number;
   targetHonmei: number;
   targetDouhan: number;
@@ -142,6 +147,7 @@ export function emptyCastInput(storeId: string): CastInput {
     line: "",
     manager: "",
     scoutedBy: "",
+    rankingEligibleFrom: "",
     targetSales: 0,
     targetHonmei: 0,
     targetDouhan: 0,
@@ -150,6 +156,23 @@ export function emptyCastInput(storeId: string): CastInput {
     memo: "",
     customerNotes: "",
   };
+}
+
+/** YYYY-MM-DD 文字列 → Timestamp（ローカルタイムの0時）。空文字/不正形式は null */
+function dateStrToTimestamp(s: string): Timestamp | null {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return Timestamp.fromDate(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+
+/** Timestamp → YYYY-MM-DD 文字列（フォーム表示用）。null/undefinedは空文字 */
+export function timestampToDateStr(ts: Timestamp | null | undefined): string {
+  if (!ts) return "";
+  const d = ts.toDate();
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${da}`;
 }
 
 /** 既存キャストからフォーム入力値を作る */
@@ -169,6 +192,7 @@ export function castToInput(cast: CastWithId): CastInput {
     line: cast.line ?? "",
     manager: cast.manager ?? "",
     scoutedBy: cast.scoutedBy ?? "",
+    rankingEligibleFrom: timestampToDateStr(cast.rankingEligibleFrom),
     targetSales: cast.targetSales ?? 0,
     targetHonmei: cast.targetHonmei ?? 0,
     targetDouhan: cast.targetDouhan ?? 0,
@@ -196,6 +220,9 @@ export function validateCastInput(
   }
   if (input.rank !== "" && !(RANKS as readonly string[]).includes(input.rank)) {
     return "ランクの値が不正です";
+  }
+  if (input.rankingEligibleFrom && !/^\d{4}-\d{2}-\d{2}$/.test(input.rankingEligibleFrom)) {
+    return "ランキング対象開始日の形式が不正です";
   }
   for (const [label, v] of [
     ["時給", input.hourlyWage],
@@ -225,6 +252,7 @@ function normalizeInput(input: CastInput) {
     line: input.line.trim(),
     manager: input.manager.trim(),
     scoutedBy: input.scoutedBy.trim(),
+    rankingEligibleFrom: dateStrToTimestamp(input.rankingEligibleFrom),
     targetSales: Math.round(input.targetSales),
     targetHonmei: Math.round(input.targetHonmei),
     targetDouhan: Math.round(input.targetDouhan),
@@ -337,6 +365,7 @@ function castBusinessFields(c: CastDoc): Record<string, unknown> {
     line: c.line,
     manager: c.manager,
     scoutedBy: c.scoutedBy,
+    rankingEligibleFrom: timestampToDateStr(c.rankingEligibleFrom),
     targetSales: c.targetSales,
     targetHonmei: c.targetHonmei,
     targetDouhan: c.targetDouhan,

@@ -1,3 +1,4 @@
+import type { Timestamp } from "firebase/firestore";
 import { realHourlyWage, type CastWithId, type MonthlyResultWithId } from "@/types";
 
 /**
@@ -110,11 +111,32 @@ function emptyResultFor(cast: Pick<CastWithId, "id" | "storeId">): MonthlyResult
 }
 
 /**
+ * ランキング対象開始日（rankingEligibleFrom）による表示判定（PR8で追加）。
+ * rankingEligibleFrom が未設定（null/undefined）の場合は常に対象（従来通り）。
+ * 設定されている場合は、対象期間の終了時刻以前かどうかで判定する。
+ * - 月次ランキング: periodEnd に monthPeriodEnd(month) を渡す
+ *   （例: rankingEligibleFrom=2024/12/15、11月ランキング→periodEnd=11/30 23:59:59 → 対象外
+ *        12月ランキング→periodEnd=12/31 23:59:59 → 対象）
+ * - 将来の日次/週次/任意期間ランキング: 対象日/週末/期間終了のDateをそのまま渡せば同じ関数で判定できる
+ *   （例: 日次ランキングで periodEnd=2024/12/10 23:59:59 → 対象外、2024/12/15 → 対象）
+ */
+export function isRankingEligible(
+  rankingEligibleFrom: Timestamp | null | undefined,
+  periodEnd: Date
+): boolean {
+  if (!rankingEligibleFrom) return true;
+  return rankingEligibleFrom.toDate().getTime() <= periodEnd.getTime();
+}
+
+/**
  * ランキング集計（旧版 renderRanking の移植）。
  * PR7で対象を「在籍キャスト全員」へ拡張: 呼び出し側が渡す activeCasts
- * （休職・退店・アーカイブ済みは呼び出し側で除外すること）全員を対象とし、
+ * （休職・退店・アーカイブ済みは呼び出し側で除外すること）のうち、
+ * rankingEligibleFrom が対象期間以前のキャストを対象とし、
  * 対象月の実績が無いキャストも0埋めのプレースホルダで表示する
  * （誰が未入力・未実績なのか一目で分かるようにするため）。
+ * - rankingEligibleFrom による除外は「対象期間より後に登録されたキャスト」のみ。
+ *   実績0のキャスト表示（PR7の仕様）は変更しない
  * - 同一castIdの重複排除（idが大きいものを優先 = 旧版と同一）
  * - key降順、同値時は castId で安定ソート（要件: 並び順の安定化）。
  *   0（実績なし）は降順ソートの結果として自然に末尾へ並ぶ
@@ -123,17 +145,19 @@ function emptyResultFor(cast: Pick<CastWithId, "id" | "storeId">): MonthlyResult
 export function buildRanking(
   results: MonthlyResultWithId[],
   cat: RankCat,
-  activeCasts: Array<Pick<CastWithId, "id" | "storeId">>
+  activeCasts: Array<Pick<CastWithId, "id" | "storeId" | "rankingEligibleFrom">>,
+  periodEnd: Date
 ): MonthlyResultWithId[] {
-  const validCastIds = new Set(activeCasts.map((c) => c.id));
+  const eligibleCasts = activeCasts.filter((c) => isRankingEligible(c.rankingEligibleFrom, periodEnd));
+  const validCastIds = new Set(eligibleCasts.map((c) => c.id));
   const dedup = new Map<string, MonthlyResultWithId>();
   results.forEach((r) => {
     if (!r.castId) return;
-    if (!validCastIds.has(r.castId)) return; // 対象外（他店舗・休職・退店・アーカイブ等）の孤立レコード除去
+    if (!validCastIds.has(r.castId)) return; // 対象外（他店舗・休職・退店・アーカイブ・対象期間外等）の孤立レコード除去
     const e = dedup.get(r.castId);
     if (!e || (r.id || "") > (e.id || "")) dedup.set(r.castId, r);
   });
-  return activeCasts
+  return eligibleCasts
     .map((c) => dedup.get(c.id) ?? emptyResultFor(c))
     .sort((a, b) => {
       const d = cat.key(b) - cat.key(a);

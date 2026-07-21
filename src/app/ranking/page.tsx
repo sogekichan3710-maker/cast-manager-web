@@ -11,6 +11,7 @@ import { subscribeMonthlyResultsByMonth } from "@/services/monthlyResultService"
 import {
   ALL_STORES_FILTER,
   currentMonth,
+  monthPeriodEnd,
   monthToJa,
   type MonthlyResultWithId,
 } from "@/types";
@@ -74,10 +75,12 @@ export default function RankingPage() {
     [casts]
   );
 
+  const periodEnd = useMemo(() => monthPeriodEnd(month) ?? new Date(), [month]);
+
   const cat = RANK_CATS[catIdx];
   const ranked = useMemo(
-    () => buildRanking(results, cat, activeCasts),
-    [results, cat, activeCasts]
+    () => buildRanking(results, cat, activeCasts, periodEnd),
+    [results, cat, activeCasts, periodEnd]
   );
 
   return (

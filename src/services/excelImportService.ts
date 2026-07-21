@@ -1,13 +1,20 @@
 import {
   collection,
   doc,
+  getDocs,
+  query,
   runTransaction,
   serverTimestamp,
+  Timestamp,
+  where,
+  type Firestore,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
 import {
+  monthPeriodStart,
   monthlyResultId,
   type BatchChange,
+  type CastDoc,
   type CastStatus,
   type MonthlyResultDoc,
   type RunStatus,
@@ -132,6 +139,8 @@ function mrBusinessFields(cur: MonthlyResultDoc): Record<string, unknown> {
  * 毎日・飛び飛び運用対応: Excelは「その時点までの月累計」を保持しているため、
  * 常に値を「更新」する（加算しない・欠損扱いしない）。lastImportAt /
  * lastImportBatchId を必ず更新し、Excel更新か手動編集かを判別できるようにする。
+ * targetDate（対象日）はインポート実行日時ではなく、ユーザーが選択した
+ * 「このデータが表す業務上の日付」（PR8で追加）。
  */
 function mrDataFromRow(
   storeId: string,
@@ -139,7 +148,8 @@ function mrDataFromRow(
   month: string,
   row: ExcelMonthlyRow,
   batchId: string,
-  actorUid: string
+  actorUid: string,
+  targetDateTs: Timestamp | null
 ) {
   return {
     castId,
@@ -157,11 +167,58 @@ function mrDataFromRow(
     absent: row.absent,
     notes: row.notes,
     batchId,
+    targetDate: targetDateTs,
     lastImportAt: serverTimestamp(),
     lastImportBatchId: batchId,
     updatedAt: serverTimestamp(),
     updatedBy: actorUid,
   };
+}
+
+/** YYYY-MM-DD 文字列 → Timestamp（ローカルタイムの0時）。空文字/不正形式/未指定は null */
+function targetDateStrToTimestamp(s: string | null | undefined): Timestamp | null {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return Timestamp.fromDate(new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+
+/**
+ * ランキング対象開始日（rankingEligibleFrom）の自動判定（PR8で追加）。
+ * このキャストにとってこのインポートが「初めてのデータ登録」だった場合のみ、
+ * かつ rankingEligibleFrom が未設定（null）の場合のみ1回だけ自動設定する。
+ * 手動設定済み・既に自動設定済みの値は一切上書きしない。
+ * 対象日（targetDate）が選択されていればその日付を、無ければ対象月の月初を使う。
+ */
+async function maybeAutoSetRankingEligibleFrom(
+  db: Firestore,
+  castId: string,
+  targetMonth: string,
+  targetDateTs: Timestamp | null,
+  actorUid: string
+): Promise<void> {
+  const otherMonths = await getDocs(
+    query(collection(db, "monthlyResults"), where("castId", "==", castId))
+  );
+  const hasOtherMonth = otherMonths.docs.some(
+    (d) => (d.data() as MonthlyResultDoc).month !== targetMonth
+  );
+  if (hasOtherMonth) return; // このキャストの初回データではない
+
+  const fallback = monthPeriodStart(targetMonth);
+  const eligibleFrom = targetDateTs ?? (fallback ? Timestamp.fromDate(fallback) : null);
+  if (!eligibleFrom) return;
+
+  const castRef = doc(db, "casts", castId);
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(castRef);
+    if (!snap.exists()) return;
+    if ((snap.data() as CastDoc).rankingEligibleFrom != null) return; // 既に設定済みは上書きしない
+    tx.update(castRef, {
+      rankingEligibleFrom: eligibleFrom,
+      updatedAt: serverTimestamp(),
+      updatedBy: actorUid,
+    });
+  });
 }
 
 export async function executeExcelImport(
@@ -170,6 +227,12 @@ export async function executeExcelImport(
   params: {
     storeId: string;
     targetMonth: string; // YYYY-MM
+    /**
+     * 対象日（任意・YYYY-MM-DD）。インポート実行日時ではなく、このデータが表す
+     * 業務上の日付（例: 7/20に6/30分のデータを取り込む場合は "2026-06-30"）。
+     * 未指定（null）の場合は従来通り月単位のみで管理する（後方互換）。
+     */
+    targetDate: string | null;
     fileName: string;
     decisions: RowDecision[];
     statusDecisions: StatusDecision[];
@@ -182,6 +245,7 @@ export async function executeExcelImport(
   if (!storeId || !/^\d{4}-\d{2}$/.test(targetMonth)) {
     throw new Error("対象店舗と対象月を選択してください");
   }
+  const targetDateTs = targetDateStrToTimestamp(params.targetDate);
 
   const batchId = await createImportBatch(actorUid, {
     storeId,
@@ -347,7 +411,7 @@ export async function executeExcelImport(
         const mrRef = doc(db, "monthlyResults", monthlyResultId(storeId, castId, targetMonth));
         const mrOutcome = await runTransaction(db, async (tx) => {
           const snap = await tx.get(mrRef);
-          const data = mrDataFromRow(storeId, castId!, targetMonth, d.row, batchId, actorUid);
+          const data = mrDataFromRow(storeId, castId!, targetMonth, d.row, batchId, actorUid, targetDateTs);
           if (!snap.exists()) {
             tx.set(mrRef, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
             return { outcome: "created" as const, before: null };
@@ -355,7 +419,9 @@ export async function executeExcelImport(
           if (d.existing === "overwrite") {
             // storeId / castId / month はID構造上同一。createdAt / createdBy は保持される
             const cur = snap.data() as MonthlyResultDoc;
-            tx.update(mrRef, data);
+            // 対象日が今回未指定の場合は既存値を保持する（後方互換・意図しない消去防止）
+            const patch = targetDateTs == null ? { ...data, targetDate: cur.targetDate ?? null } : data;
+            tx.update(mrRef, patch);
             return { outcome: "updated" as const, before: mrBusinessFields(cur) };
           }
           return { outcome: "skipped" as const, before: null };
@@ -369,6 +435,8 @@ export async function executeExcelImport(
             before: null,
             after: null,
           });
+          // ランキング対象開始日の自動判定（初回データ登録時のみ・未設定の場合のみ。判定ロジックは変更しない）
+          await maybeAutoSetRankingEligibleFrom(db, castId, targetMonth, targetDateTs, actorUid);
         } else if (mrOutcome.outcome === "updated") {
           updated++;
           changes.push({
