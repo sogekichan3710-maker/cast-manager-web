@@ -22,6 +22,30 @@
   --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
 }
 
+/*
+ * ライトモード（PR6で追加）。デフォルトは従来どおりダーク（上の :root）のまま
+ * 変更しておらず、<html data-theme="light"> が付いたときだけこちらを適用する
+ * （ThemeProvider が localStorage の選択に応じて切り替える）。
+ * 色以外の変数（--r / --font-* 等）は継承されるため再定義不要。
+ */
+:root[data-theme="light"] {
+  --bg: #f5f3fb;
+  --bg2: #ffffff;
+  --bg3: #f1edf9;
+  --bg4: #e7e0f5;
+  --border: #ddd5ee;
+  --border2: #c7bae3;
+  --text: #241f33;
+  --text2: #4a4260;
+  --text3: #837a99;
+  --acc: #7c3aed;
+  --acc2: #6d28d9;
+  --acc-bg: rgba(124, 58, 237, 0.08);
+  --green: #15803d;
+  --yellow: #a16207;
+  --red: #dc2626;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -665,6 +689,22 @@ textarea.form-input {
 .dash-columns .detail-card {
   margin-bottom: 0;
 }
+.dash-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.dash-section-head .detail-heading {
+  margin-bottom: 0;
+}
+.dash-detail-link {
+  font-size: 11px;
+  color: var(--acc2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 /* ---------- PR3.5: ランキング ---------- */
 .rank-row-link {
@@ -726,6 +766,61 @@ textarea.form-input {
   color: var(--text3);
   margin-left: 4px;
   font-weight: 400;
+}
+
+/* ---------- PR6: ランキング全件表示（スクロール） ---------- */
+.rank-list-scroll {
+  max-height: 70vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ---------- PR6: 設定画面（テーマ切替） ---------- */
+.theme-option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  text-align: left;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 14px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text);
+}
+.theme-option.active {
+  border-color: var(--acc);
+  background: var(--acc-bg);
+}
+.theme-option-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid var(--border2);
+}
+.theme-option-swatch[data-swatch="dark"] {
+  background: linear-gradient(135deg, #12101a 50%, #9c6bff 50%);
+}
+.theme-option-swatch[data-swatch="light"] {
+  background: linear-gradient(135deg, #ffffff 50%, #7c3aed 50%);
+}
+.theme-option-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.theme-option-desc {
+  display: block;
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 2px;
 }
 
 /* ===== PR4: 移行・インポート・エクスポート ===== */

@@ -1,3 +1,4 @@
+import type { Timestamp } from "firebase/firestore";
 import type { ExcelMonthlyRow } from "@/lib/excel/parseMonthlyExcel";
 import type { MonthlyResultWithId } from "@/types";
 
@@ -74,4 +75,32 @@ export function diffMonthlyResultFields(
 export function fmtDiffValue(v: number | string, yen: boolean): string {
   if (typeof v !== "number") return String(v);
   return yen ? `¥${v.toLocaleString()}` : v.toLocaleString();
+}
+
+/**
+ * 月別成績が最後にどちらの経路で更新されたか（毎日/飛び飛びのExcel運用の
+ * 可視化用）。lastImportAt / lastManualEditAt のうち新しい方を採用する。
+ * どちらも無い場合（PR5より前の旧データ）は "不明"。
+ */
+export type LastUpdateSource = "Excel" | "手動編集" | "不明";
+
+export function lastUpdateSource(
+  r: Pick<MonthlyResultWithId, "lastImportAt" | "lastManualEditAt">
+): LastUpdateSource {
+  if (r.lastImportAt && r.lastManualEditAt) {
+    return r.lastImportAt.toMillis() >= r.lastManualEditAt.toMillis() ? "Excel" : "手動編集";
+  }
+  if (r.lastImportAt) return "Excel";
+  if (r.lastManualEditAt) return "手動編集";
+  return "不明";
+}
+
+/** 最後の更新時刻（lastImportAt / lastManualEditAt のうち新しい方）。無ければ null */
+export function lastUpdateAt(
+  r: Pick<MonthlyResultWithId, "lastImportAt" | "lastManualEditAt">
+): Timestamp | null {
+  const a = r.lastImportAt ?? null;
+  const b = r.lastManualEditAt ?? null;
+  if (a && b) return a.toMillis() >= b.toMillis() ? a : b;
+  return a ?? b ?? null;
 }

@@ -24,7 +24,7 @@ import {
   type AnalyzeProgress,
 } from "@/lib/excel/analyzeExcel";
 import type { MatchResult, RowAction, MatchableCast } from "@/lib/excel/importMatching";
-import { diffMonthlyResultFields, fmtDiffValue } from "@/lib/monthlyResultDiff";
+import { diffMonthlyResultFields, fmtDiffValue, lastUpdateSource } from "@/lib/monthlyResultDiff";
 import {
   BULK_NEW_WARN_COUNT,
   ROW_FILTERS,
@@ -1109,9 +1109,7 @@ function RowCard({
           </div>
           {rs.showDiff && (() => {
             const diffs = diffMonthlyResultFields(existing, row);
-            const lastSrc = existing.lastImportAt && existing.lastManualEditAt
-              ? (existing.lastImportAt.toMillis() >= existing.lastManualEditAt.toMillis() ? "Excel" : "手動編集")
-              : existing.lastImportAt ? "Excel" : existing.lastManualEditAt ? "手動編集" : "不明";
+            const lastSrc = lastUpdateSource(existing);
             return (
               <div style={{ marginTop: 8 }}>
                 <p className="page-sub" style={{ marginBottom: 6 }}>

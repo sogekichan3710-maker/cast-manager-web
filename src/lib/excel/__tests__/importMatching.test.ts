@@ -14,6 +14,7 @@ function row(name: string, hourlyWage: number | null = null): ExcelMonthlyRow {
     rowNumber: 2,
     name,
     hourlyWage,
+    scoutedBy: "",
     totalSales: 1000000,
     payment: 500000,
     honshimeiCount: 5,

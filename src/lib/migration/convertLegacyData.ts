@@ -327,6 +327,7 @@ export function convertLegacyData(
         phone: asStr(pick(rec, ["phone", "tel"])),
         line: asStr(pick(rec, ["line", "lineId"])),
         manager: asStr(pick(rec, ["manager", "tantou"])),
+        scoutedBy: asStr(pick(rec, ["scoutedBy", "scout", "scoutedby"])),
         targetSales: Math.round(asNum(pick(rec, ["targetSales"]))),
         targetHonmei: Math.round(asNum(pick(rec, ["targetHonmei", "targetHonshimei"]))),
         targetDouhan: Math.round(asNum(pick(rec, ["targetDouhan"]))),

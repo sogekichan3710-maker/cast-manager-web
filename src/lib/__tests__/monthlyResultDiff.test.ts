@@ -35,6 +35,7 @@ function row(overrides: Partial<ExcelMonthlyRow> = {}): ExcelMonthlyRow {
     rowNumber: 2,
     name: "あいり",
     hourlyWage: 5000,
+    scoutedBy: "",
     totalSales: 1000000,
     payment: 400000,
     honshimeiCount: 20,

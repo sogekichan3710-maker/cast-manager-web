@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { DiffAmount } from "@/components/DiffAmount";
 import { InterviewEditModal } from "@/components/InterviewEditModal";
 import { MonthlyResultFormModal } from "@/components/MonthlyResultFormModal";
 import { RecordFormModal } from "@/components/RecordFormModal";
@@ -22,7 +23,6 @@ import {
 } from "@/services/castDeleteService";
 import {
   currentMonth,
-  fmtDiff,
   isAdminOrAbove,
   isOwner,
   monthToJa,
@@ -173,8 +173,12 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
                         <td className="num" style={{ color: "var(--acc2)" }}>
                           {rw != null ? "¥" + rw.toLocaleString() : "-"}
                         </td>
-                        <td className="num">{fmtDiff(pr)}</td>
-                        <td className="num">{fmtDiff(hr)}</td>
+                        <td className="num">
+                          <DiffAmount value={pr} />
+                        </td>
+                        <td className="num">
+                          <DiffAmount value={hr} />
+                        </td>
                         <td className="num">{r.honshimeiCount || 0}</td>
                         <td className="num">{r.jounaiCount || 0}</td>
                         <td className="num">{r.douhan || 0}</td>

@@ -32,7 +32,16 @@ let app: FirebaseApp;
 let authInstance: Auth;
 let dbInstance: Firestore;
 let functionsInstance: Functions;
-let emulatorConnected = false;
+// 各サービスごとに接続済みかを個別に管理する（PR6で修正）。
+// 以前は3サービス共通の1つのフラグで管理しており、authInstanceだけが
+// 先に生成された時点で一度 connectAuthEmulator を呼んでしまうと、
+// 後からdbInstanceが生成された際の再呼び出しで connectAuthEmulator が
+// （既に接続済みのため）例外を投げ、その後続にある
+// connectFirestoreEmulator の呼び出しまで一緒にスキップされてしまう
+// 不具合があった（Firestoreだけエミュレータへ接続されず本番へ流れる）。
+let authEmulatorConnected = false;
+let dbEmulatorConnected = false;
+let functionsEmulatorConnected = false;
 
 export function getFirebaseApp(): FirebaseApp {
   if (!app) {
@@ -71,17 +80,37 @@ export function getFunctionsInstance(): Functions {
   return functionsInstance;
 }
 
+/**
+ * 生成済みの各インスタンスをエミュレータへ接続する。
+ * サービスごとに独立して一度だけ試行するため、いずれかの接続呼び出しが
+ * 失敗（例外）しても他のサービスの接続には影響しない。
+ */
 function maybeConnectEmulators(): void {
-  if (emulatorConnected) return;
   if (process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR !== "true") return;
   if (typeof window === "undefined") return;
-  try {
-    if (authInstance) connectAuthEmulator(authInstance, "http://127.0.0.1:9099", { disableWarnings: true });
-    if (dbInstance) connectFirestoreEmulator(dbInstance, "127.0.0.1", 8080);
-    if (functionsInstance) connectFunctionsEmulator(functionsInstance, "127.0.0.1", 5001);
-    emulatorConnected = !!(authInstance && dbInstance && functionsInstance);
-  } catch {
-    // 既に接続済みの場合は無視
-    emulatorConnected = true;
+
+  if (authInstance && !authEmulatorConnected) {
+    authEmulatorConnected = true;
+    try {
+      connectAuthEmulator(authInstance, "http://127.0.0.1:9099", { disableWarnings: true });
+    } catch {
+      // 既に接続済みの場合は無視
+    }
+  }
+  if (dbInstance && !dbEmulatorConnected) {
+    dbEmulatorConnected = true;
+    try {
+      connectFirestoreEmulator(dbInstance, "127.0.0.1", 8080);
+    } catch {
+      // 既に接続済みの場合は無視
+    }
+  }
+  if (functionsInstance && !functionsEmulatorConnected) {
+    functionsEmulatorConnected = true;
+    try {
+      connectFunctionsEmulator(functionsInstance, "127.0.0.1", 5001);
+    } catch {
+      // 既に接続済みの場合は無視
+    }
   }
 }

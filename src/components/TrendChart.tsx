@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { fmtYenJa } from "@/lib/formatYen";
 import {
-  fmtDiff,
   lowerSalesByWage,
   monthShortLabel,
   payDiff,
@@ -32,9 +32,10 @@ interface ChartDef {
   fmt: (v: number) => string;
   value: (r: MonthlyResultWithId) => number;
   withRefLines?: boolean;
+  /** マイナス値のラベルを赤字表示にする（給与差額・時給差額など・PR6） */
+  redIfNegative?: boolean;
 }
 
-const fmtMoney = (v: number) => "¥" + Math.round(v).toLocaleString();
 const fmtInt = (unit: string) => (v: number) => {
   const n = Math.round(Math.abs(v) < 1e-9 ? 0 : v);
   return n + unit;
@@ -46,7 +47,7 @@ function chartDefs(cast: CastWithId): ChartDef[] {
     {
       label: "売上推移",
       color: "#e040fb",
-      fmt: fmtMoney,
+      fmt: fmtYenJa,
       value: (r) => r.totalSales || 0,
       withRefLines: true,
     },
@@ -83,14 +84,16 @@ function chartDefs(cast: CastWithId): ChartDef[] {
     {
       label: "給与差額推移",
       color: "#ff9100",
-      fmt: (v) => fmtDiff(v),
+      fmt: fmtYenJa,
       value: (r) => payDiff(r.totalSales, r.payment) || 0,
+      redIfNegative: true,
     },
     {
       label: "時給差額推移",
       color: "#ff5252",
-      fmt: (v) => fmtDiff(v),
+      fmt: fmtYenJa,
       value: (r) => wageDiff(r.totalSales, cast.hourlyWage, r.workHours, r.workDays) || 0,
+      redIfNegative: true,
     },
   ];
 }
@@ -136,13 +139,13 @@ export function TrendChart({
         {
           v: target,
           color: "#00e676",
-          label: `目標 ¥${Math.round(target / 1000)}k`,
+          label: `目標 ${fmtYenJa(target)}`,
           dash: "8,4",
         },
         {
           v: lower,
           color: "#ff9100",
-          label: `下限 ¥${Math.round(lower / 1000)}k`,
+          label: `下限 ${fmtYenJa(lower)}`,
           dash: "4,4",
         },
       ];
@@ -187,7 +190,13 @@ export function TrendChart({
         </div>
       )}
 
-      <SvgLineChart data={data} color={def.color} fmt={def.fmt} refLines={refLines} />
+      <SvgLineChart
+        data={data}
+        color={def.color}
+        fmt={def.fmt}
+        refLines={refLines}
+        redIfNegative={def.redIfNegative}
+      />
     </div>
   );
 }
@@ -228,11 +237,13 @@ function SvgLineChart({
   color,
   fmt,
   refLines,
+  redIfNegative,
 }: {
   data: { l: string; v: number }[];
   color: string;
   fmt: (v: number) => string;
   refLines: RefLine[] | null;
+  redIfNegative?: boolean;
 }) {
   const W = 580;
   const H = 200;
@@ -349,7 +360,7 @@ function SvgLineChart({
               y={p.py - 8}
               textAnchor="middle"
               fontSize={8.5}
-              fill="var(--text2)"
+              fill={redIfNegative && p.v < 0 ? "var(--red)" : "var(--text2)"}
             >
               {fmt(p.v)}
             </text>
