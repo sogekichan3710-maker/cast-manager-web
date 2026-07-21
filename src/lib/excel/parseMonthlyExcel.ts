@@ -175,6 +175,77 @@ const SHEET_NAME_PENALTY = ["設定", "config", "master", "マスタ", "集計",
 const MAX_CONSECUTIVE_INVALID = 5;
 /** 「異常に多い」とみなすキャスト行数 */
 const TOO_MANY_ROWS = 150;
+/**
+ * シートの走査上限（行・列）。実運用スケール（キャスト数百名規模）を大きく
+ * 上回る値だが、Excelの書式設定等の副作用でシート範囲（!ref）が
+ * 数十万〜100万行超に膨れ上がることがある（実店舗ファイルで確認済み）。
+ * これを無制限に読み込むとブラウザが応答不能になるため、実データが
+ * 明らかに収まる範囲へ安全にクランプする。
+ */
+const MAX_SCAN_ROWS = 2000;
+const MAX_SCAN_COLS = 200;
+
+/** 数式エラー値（#REF!等）の判定パターン */
+const FORMULA_ERROR_PATTERN = /^#(REF|VALUE|DIV\/0|NAME|N\/A|NULL|NUM|ERROR)!?\??$/i;
+
+function isFormulaErrorValue(v: unknown): boolean {
+  return typeof v === "string" && FORMULA_ERROR_PATTERN.test(v.trim());
+}
+
+/** 数式エラーメッセージ表示用の日本語ラベル */
+const FIELD_JA_LABELS: Record<keyof typeof COLUMN_ALIASES, string> = {
+  name: "名前",
+  hourlyWage: "時給",
+  scoutedBy: "スカウト者",
+  totalSales: "売上",
+  payment: "支給額",
+  honshimeiCount: "本指名",
+  honshimeiGroupCount: "本指名組数",
+  customerCount: "顧客数",
+  jounaiCount: "場内",
+  douhan: "同伴",
+  workDays: "出勤日数",
+  workHours: "労働時間",
+  absent: "欠勤",
+  notes: "備考",
+};
+
+/** 数式エラー検出の対象とする数値系フィールド（名前・スカウト者・備考は対象外） */
+const NUMERIC_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
+  "hourlyWage",
+  "totalSales",
+  "payment",
+  "honshimeiCount",
+  "honshimeiGroupCount",
+  "customerCount",
+  "jounaiCount",
+  "douhan",
+  "workDays",
+  "workHours",
+  "absent",
+];
+
+/**
+ * シートを安全な範囲でグリッド化する。
+ * シート範囲（!ref）が異常に大きい場合は MAX_SCAN_ROWS/MAX_SCAN_COLS
+ * までにクランプして読み込み、実データを保ったまま暴走を防ぐ。
+ */
+function safeGridFromSheet(ws: XLSX.WorkSheet): { grid: unknown[][]; truncated: boolean } {
+  if (!ws["!ref"]) return { grid: [], truncated: false };
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  const truncated = range.e.r + 1 > MAX_SCAN_ROWS || range.e.c + 1 > MAX_SCAN_COLS;
+  if (truncated) {
+    range.e.r = Math.min(range.e.r, MAX_SCAN_ROWS - 1);
+    range.e.c = Math.min(range.e.c, MAX_SCAN_COLS - 1);
+  }
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+    header: 1,
+    raw: true,
+    defval: "",
+    range: truncated ? range : undefined,
+  });
+  return { grid, truncated };
+}
 
 function normText(v: unknown): string {
   return String(v ?? "")
@@ -290,6 +361,8 @@ export interface SheetScan {
   dataStartRow: number | null;
   dataEndRow: number | null;
   score: number;
+  /** シート範囲が異常に大きく、読み込み範囲をクランプした場合 true */
+  truncated: boolean;
 }
 
 /** ヘッダー検出済みシートからデータ行・除外行を抽出する */
@@ -334,6 +407,22 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
       continue;
     }
 
+    // 数式エラー値（#REF!等）の検出。他シート参照の数式が壊れている場合、
+    // 黙って0扱いにすると誤ったデータをそのまま保存してしまうため、
+    // どの項目が取得不能だったかを明示したうえで行ごと除外する
+    const errorFields = NUMERIC_FIELDS.filter(
+      (field) => colIndex[field] !== undefined && isFormulaErrorValue(get(cells, field))
+    );
+    if (errorFields.length > 0) {
+      const labels = errorFields.map((f) => FIELD_JA_LABELS[f]).join("・");
+      excluded.push({
+        rowNumber,
+        value: rawName,
+        reason: `数式エラーのため「${labels}」を取得できません。Excelを開いて再計算・保存し直すか、個別キャストシート等から値をご確認ください`,
+      });
+      continue;
+    }
+
     consecutiveInvalid = 0;
     rows.push({
       rowNumber,
@@ -373,27 +462,41 @@ function sheetNameScore(name: string): number {
 
 /** Excelバイナリをワークブックとして読み込む（シート解析段階） */
 export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
-  const wb = XLSX.read(buffer, { type: "array" });
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(buffer, { type: "array" });
+  } catch {
+    throw new Error(
+      "ファイル形式を読み取れませんでした。.xlsx / .xls 形式で保存されたExcelファイルかご確認のうえ、" +
+        "壊れている場合はExcelで開いて別名保存してから再度お試しください。"
+    );
+  }
   if (wb.SheetNames.length === 0) throw new Error("Excelにシートがありません");
   return wb;
 }
 
 /** 1シートを走査する（ヘッダー判定+データ抽出段階。非同期版から1枚ずつ呼ぶ） */
 export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], {
-    header: 1,
-    raw: true,
-    defval: "",
-  });
+  const { grid, truncated } = safeGridFromSheet(wb.Sheets[name]);
   const header = detectHeader(grid);
   if (!header) {
-    return { name, header: null, grid, rows: [], excluded: [], dataStartRow: null, dataEndRow: null, score: sheetNameScore(name) - 1000 };
+    return {
+      name,
+      header: null,
+      grid,
+      rows: [],
+      excluded: [],
+      dataStartRow: null,
+      dataEndRow: null,
+      score: sheetNameScore(name) - 1000,
+      truncated,
+    };
   }
   const extracted = extractRows(grid, header);
   // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
   const score =
     sheetNameScore(name) + header.knownCols * 10 + Math.min(extracted.rows.length, 50);
-  return { name, header, grid, ...extracted, score };
+  return { name, header, grid, ...extracted, score, truncated };
 }
 
 /** 走査済み全シートから採用シートを決定し、結果を組み立てる */
@@ -432,13 +535,16 @@ export function assembleParseResult(
     name: s.name,
     adopted: s === adopted,
     reason:
-      s === adopted
+      (s === adopted
         ? "給料明細シートとして採用"
         : s.header === null
           ? "ヘッダー行を検出できないため除外（設定・集計シートの可能性）"
           : s.rows.length === 0
             ? "有効なキャスト行が無いため除外"
-            : "採用シートよりスコアが低いため除外",
+            : "採用シートよりスコアが低いため除外") +
+      (s.truncated
+        ? `（シート範囲が異常に大きいため先頭${MAX_SCAN_ROWS}行までで読み込み）`
+        : ""),
     headerRowNumber: s.header ? s.header.headerRowIdx + 1 : null,
     validRows: s.rows.length,
   }));
@@ -460,6 +566,17 @@ export function assembleParseResult(
   }
   if (adopted.excluded.length > adopted.rows.length && adopted.rows.length > 0) {
     warnings.push("除外行がキャスト行より多くなっています。除外理由をご確認ください。");
+  }
+  if (adopted.truncated) {
+    warnings.push(
+      `採用シート「${adopted.name}」の範囲が異常に大きい（Excelの書式設定等が原因の可能性）ため、先頭${MAX_SCAN_ROWS}行までで読み込みました。データが途中で切れていないかご確認ください。`
+    );
+  }
+  const errorSkippedCount = adopted.excluded.filter((e) => e.reason.includes("数式エラー")).length;
+  if (errorSkippedCount > 0) {
+    warnings.push(
+      `${errorSkippedCount}件の行が数式エラー（#REF!等）のため読み込めませんでした。除外行の詳細をご確認ください。`
+    );
   }
 
   const headerCells = (adopted.grid[adopted.header.headerRowIdx] ?? []).map((v) => String(v ?? ""));
