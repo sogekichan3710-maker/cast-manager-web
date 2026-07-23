@@ -25,6 +25,7 @@ import { buildRuleFromDecision } from "@/lib/excel/importMatching";
 import { createImportBatch, completeImportBatch } from "./importBatchService";
 import { upsertNameMatchingRule } from "./nameMatchingRuleService";
 import { writeAuditLog } from "./auditLogService";
+import { applyScoutedByIfChanged } from "./scoutedByService";
 
 /**
  * Excelインポートの実行サービス。
@@ -335,19 +336,7 @@ export async function executeExcelImport(
         // Excel側が空欄の行では既存の手入力値を消さないよう、値がある場合のみ更新する
         const scoutedByFromExcel = d.row.scoutedBy.trim();
         if (d.action !== "new" && scoutedByFromExcel) {
-          const castRef = doc(db, "casts", castId);
-          const scoutResult = await runTransaction(db, async (tx) => {
-            const snap = await tx.get(castRef);
-            if (!snap.exists()) throw new Error("キャストが見つかりません");
-            const current = (snap.data() as { scoutedBy?: string }).scoutedBy ?? "";
-            if (current === scoutedByFromExcel) return null;
-            tx.update(castRef, {
-              scoutedBy: scoutedByFromExcel,
-              updatedAt: serverTimestamp(),
-              updatedBy: actorUid,
-            });
-            return { before: current, after: scoutedByFromExcel };
-          });
+          const scoutResult = await applyScoutedByIfChanged(db, castId, scoutedByFromExcel, actorUid);
           if (scoutResult) {
             changes.push({
               type: "cast-updated",

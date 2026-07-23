@@ -490,6 +490,18 @@ export default function ImportPage() {
                     </tr>
                     <tr><td>検出キャスト行</td><td>{parseResult.rows.length}件</td></tr>
                     <tr><td>除外行</td><td>{parseResult.excluded.length}件</td></tr>
+                    <tr>
+                      <td>スカウト者列</td>
+                      <td>
+                        {parseResult.headerMap.scoutedBy ? (
+                          `「${parseResult.headerMap.scoutedBy}」列を使用`
+                        ) : (
+                          <span className="dim">
+                            見出しを検出できませんでした（任意項目のため未対応列名の場合は反映されません。既存キャストのスカウト者は変更されません）
+                          </span>
+                        )}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
