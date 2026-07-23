@@ -74,6 +74,34 @@ export interface ExcelParseResult {
   sheets: SheetInfo[];
   /** 0件・件数過多・シート名が怪しい等の警告 */
   warnings: string[];
+  /**
+   * スカウト者（情報提供者）列の検出状況の詳細（調査・デバッグ表示用）。
+   * 主シートに列が無い場合は他シートからの自動補完を試みるため、
+   * どのシート・どの列から取得したかを追跡できるようにする。
+   */
+  scoutedByDebug: ScoutedByDebugInfo | null;
+}
+
+export interface ScoutedByDebugSample {
+  rowNumber: number;
+  name: string;
+  raw: string;
+  trimmed: string;
+}
+
+export interface ScoutedByDebugInfo {
+  /** "primary": 採用シート自体に列があった / "supplement": 他シートから補完 / "none": 検出できず */
+  source: "primary" | "supplement" | "none";
+  sheetName: string;
+  headerLabel: string;
+  /** 1始まり */
+  columnNumber: number | null;
+  /** 1始まり */
+  headerRowNumber: number | null;
+  /** 1始まり（名前列。結合セルにより補正された場合はその補正後の列） */
+  nameColumnNumber: number | null;
+  sample: ScoutedByDebugSample[];
+  reason: string;
 }
 
 /**
@@ -87,12 +115,14 @@ const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber">, string[]>
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
   scoutedBy: [
     "スカウト者",
+    "情報提供者",
     "スカウト",
     "スカウト担当",
     "スカウト者名",
     "スカウト担当者",
     "スカウトマン",
     "紹介者",
+    "情報提供者名",
     "scoutedby",
     "scout",
   ],
@@ -504,6 +534,132 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
   };
 }
 
+/**
+ * 名前列のヘッダーセルが複数列にまたがる結合セルの場合、実際に
+ * 1行ごとの氏名が入っている列を結合範囲内から選び直す。
+ *
+ * 実店舗のExcel（「キャスト実績」シート等）では「キャスト名」ヘッダーが
+ * 区分／No／氏名の3列にまたがる結合セルになっており、素直にヘッダー文字列の
+ * 位置（先頭列）を名前列とみなすと、区分列（複数行にわたる縦結合で
+ * 大半の行が空欄）やNo列（数値のみ）を誤って名前列としてしまう。
+ * 結合範囲内の各列を実データ（ヘッダー直後の行）でスコアリングし、
+ * 「非空・非数値のセルが最も多い列」を実際の名前列として採用する。
+ */
+function resolveMergedNameColumn(
+  grid: unknown[][],
+  merges: ReadonlyArray<{ s: { r: number; c: number }; e: { r: number; c: number } }>,
+  headerRowIdx: number,
+  initialCol: number
+): number {
+  const spanMerge = merges.find(
+    (m) =>
+      m.s.c <= initialCol &&
+      initialCol <= m.e.c &&
+      m.s.r <= headerRowIdx &&
+      headerRowIdx <= m.e.r &&
+      m.e.c > m.s.c
+  );
+  if (!spanMerge) return initialCol;
+
+  const scanEnd = Math.min(grid.length, headerRowIdx + 1 + 60);
+  const candidates: { c: number; nonEmpty: number; numericOnly: number }[] = [];
+  for (let c = spanMerge.s.c; c <= spanMerge.e.c; c++) {
+    let nonEmpty = 0;
+    let numericOnly = 0;
+    for (let r = headerRowIdx + 1; r < scanEnd; r++) {
+      const s = String(grid[r]?.[c] ?? "").trim();
+      if (s === "") continue;
+      nonEmpty++;
+      if (isNumericOnly(s)) numericOnly++;
+    }
+    candidates.push({ c, nonEmpty, numericOnly });
+  }
+  const viable = candidates.filter((cand) => cand.nonEmpty > 0 && cand.numericOnly < cand.nonEmpty);
+  if (viable.length === 0) return initialCol;
+  viable.sort((a, b) => b.nonEmpty - a.nonEmpty);
+  return viable[0].c;
+}
+
+interface ScoutedBySupplementCandidate {
+  sheetName: string;
+  headerLabel: string;
+  headerRowNumber: number;
+  columnNumber: number;
+  nameColumnNumber: number;
+  map: Map<string, string>;
+  sample: ScoutedByDebugSample[];
+  ambiguousNames: string[];
+}
+
+/**
+ * 採用シート自体にスカウト者（情報提供者）列が無い場合に、他シートから
+ * 「名前列＋スカウト者列」の組を検出し、氏名一致で値を補完するための
+ * 候補を探す。通常のヘッダー判定（detectHeader）・データ抽出（extractRows）
+ * をそのまま再利用し、名前列のみ resolveMergedNameColumn で補正する。
+ *
+ * 複数シートが候補になった場合は、補完できた件数が最も多いシートを採用する。
+ * 同一氏名に複数の異なるスカウト者値が見つかった場合は、誤反映を避けるため
+ * その氏名は補完対象から除外する（ambiguousNames に記録）。
+ */
+function findScoutedBySupplement(
+  wb: XLSX.WorkBook,
+  scans: SheetScan[],
+  excludeSheetName: string
+): ScoutedBySupplementCandidate | null {
+  let best: ScoutedBySupplementCandidate | null = null;
+
+  for (const scan of scans) {
+    if (scan.name === excludeSheetName) continue;
+    const header = scan.header;
+    if (!header || header.colIndex.scoutedBy === undefined || header.colIndex.name === undefined) continue;
+
+    const ws = wb.Sheets[scan.name];
+    const merges = (ws["!merges"] ?? []) as ReadonlyArray<{
+      s: { r: number; c: number };
+      e: { r: number; c: number };
+    }>;
+    const resolvedNameCol = resolveMergedNameColumn(scan.grid, merges, header.headerRowIdx, header.colIndex.name);
+    const effectiveHeader: HeaderDetection =
+      resolvedNameCol === header.colIndex.name
+        ? header
+        : { ...header, colIndex: { ...header.colIndex, name: resolvedNameCol } };
+    const extracted = extractRows(scan.grid, effectiveHeader);
+
+    const map = new Map<string, string>();
+    const conflicting = new Set<string>();
+    const sample: ScoutedByDebugSample[] = [];
+    for (const row of extracted.rows) {
+      const value = row.scoutedBy.trim();
+      if (sample.length < 5) {
+        sample.push({ rowNumber: row.rowNumber, name: row.name, raw: value, trimmed: value });
+      }
+      if (!value) continue;
+      const key = normText(row.name);
+      if (map.has(key) && map.get(key) !== value) {
+        conflicting.add(key);
+        continue;
+      }
+      map.set(key, value);
+    }
+    for (const key of conflicting) map.delete(key);
+    if (map.size === 0) continue;
+
+    const headerCells = (scan.grid[header.headerRowIdx] ?? []).map((v) => String(v ?? ""));
+    const candidate: ScoutedBySupplementCandidate = {
+      sheetName: scan.name,
+      headerLabel: headerCells[header.colIndex.scoutedBy] ?? "",
+      headerRowNumber: header.headerRowIdx + 1,
+      columnNumber: header.colIndex.scoutedBy + 1,
+      nameColumnNumber: resolvedNameCol + 1,
+      map,
+      sample,
+      ambiguousNames: [...conflicting],
+    };
+    if (!best || candidate.map.size > best.map.size) best = candidate;
+  }
+  return best;
+}
+
 /** シート名によるスコア（給料明細らしさ） */
 function sheetNameScore(name: string): number {
   const n = normText(name);
@@ -556,6 +712,7 @@ export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
 export function assembleParseResult(
   scans: SheetScan[],
   sheetNames: string[],
+  wb: XLSX.WorkBook,
   opts?: { sheetName?: string }
 ): ExcelParseResult {
   // ---- 採用シートの決定 ----
@@ -638,8 +795,69 @@ export function assembleParseResult(
     headerMap[field] = headerCells[idx] ?? "";
   });
 
+  // ---- スカウト者（情報提供者）列の解決 ----
+  // 採用シート自体に列が無い場合、他シートから「名前＋スカウト者」列の
+  // 組を検出し、氏名一致で補完する（実店舗のExcelでは月別成績とスカウト者
+  // 情報が別シートに分かれていることがあるため）。
+  let rows = adopted.rows;
+  let scoutedByDebug: ScoutedByDebugInfo;
+  if (adopted.header.colIndex.scoutedBy !== undefined) {
+    const idx = adopted.header.colIndex.scoutedBy;
+    scoutedByDebug = {
+      source: "primary",
+      sheetName: adopted.name,
+      headerLabel: headerCells[idx] ?? "",
+      columnNumber: idx + 1,
+      headerRowNumber: adopted.header.headerRowIdx + 1,
+      nameColumnNumber: (adopted.header.colIndex.name ?? -1) + 1,
+      sample: adopted.rows.slice(0, 5).map((r) => {
+        const rawCell = adopted.grid[r.rowNumber - 1]?.[idx];
+        const raw = String(rawCell ?? "");
+        return { rowNumber: r.rowNumber, name: r.name, raw, trimmed: r.scoutedBy };
+      }),
+      reason: `採用シート「${adopted.name}」の${idx + 1}列目（見出し「${headerCells[idx] ?? ""}」）から取得`,
+    };
+  } else {
+    const supplement = findScoutedBySupplement(wb, scans, adopted.name);
+    if (supplement) {
+      rows = adopted.rows.map((row) => {
+        if (row.scoutedBy) return row;
+        const value = supplement.map.get(normText(row.name));
+        return value ? { ...row, scoutedBy: value } : row;
+      });
+      headerMap.scoutedBy = `${supplement.headerLabel}（「${supplement.sheetName}」シートから自動補完）`;
+      scoutedByDebug = {
+        source: "supplement",
+        sheetName: supplement.sheetName,
+        headerLabel: supplement.headerLabel,
+        columnNumber: supplement.columnNumber,
+        headerRowNumber: supplement.headerRowNumber,
+        nameColumnNumber: supplement.nameColumnNumber,
+        sample: supplement.sample,
+        reason:
+          `採用シート「${adopted.name}」にはスカウト者列が無いため、` +
+          `「${supplement.sheetName}」シートの${supplement.columnNumber}列目` +
+          `（見出し「${supplement.headerLabel}」）を氏名一致で補完` +
+          (supplement.ambiguousNames.length > 0
+            ? `（同名で値が競合した${supplement.ambiguousNames.length}名は補完対象外）`
+            : ""),
+      };
+    } else {
+      scoutedByDebug = {
+        source: "none",
+        sheetName: adopted.name,
+        headerLabel: "",
+        columnNumber: null,
+        headerRowNumber: null,
+        nameColumnNumber: (adopted.header.colIndex.name ?? -1) + 1,
+        sample: [],
+        reason: `採用シート「${adopted.name}」および他のどのシートにも、名前列とスカウト者/情報提供者列の組み合わせを検出できませんでした。`,
+      };
+    }
+  }
+
   return {
-    rows: adopted.rows,
+    rows,
     excluded: adopted.excluded,
     headerMap,
     sheetName: adopted.name,
@@ -648,6 +866,7 @@ export function assembleParseResult(
     dataEndRow: adopted.dataEndRow,
     sheets,
     warnings,
+    scoutedByDebug,
   };
 }
 
@@ -664,5 +883,5 @@ export function parseMonthlyExcel(
 ): ExcelParseResult {
   const wb = readWorkbook(buffer);
   const scans = wb.SheetNames.map((name) => scanSheet(wb, name));
-  return assembleParseResult(scans, wb.SheetNames, opts);
+  return assembleParseResult(scans, wb.SheetNames, wb, opts);
 }

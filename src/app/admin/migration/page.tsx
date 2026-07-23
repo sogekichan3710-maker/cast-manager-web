@@ -4,14 +4,11 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { AppHeader } from "@/components/AppHeader";
-import { useCasts } from "@/hooks/useCasts";
 import { useStores } from "@/hooks/useStores";
 import { isOwner, type MigrationRunWithId, type RunStatus } from "@/types";
 import { parseLegacyData } from "@/lib/migration/parseLegacyData";
 import { validateLegacyData, type MigrationPreview } from "@/lib/migration/validateLegacyData";
 import type { ConversionIssue } from "@/lib/migration/convertLegacyData";
-import { parseMonthlyExcel } from "@/lib/excel/parseMonthlyExcel";
-import { buildScoutedByPlan, type ScoutedByPlanRow } from "@/lib/excel/scoutedByBulkPlan";
 import {
   executeMigration,
   subscribeMigrationRuns,
@@ -23,7 +20,6 @@ import {
   type BackfillProgress,
   type BackfillResult,
 } from "@/services/rankingEligibilityService";
-import { applyScoutedByBulkPlan, type BulkScoutedByResult } from "@/services/scoutedByService";
 import { downloadBlob, timestampedFileName } from "@/lib/download";
 
 /**
@@ -58,16 +54,6 @@ export default function MigrationPage() {
   const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null);
   const backfillCancelRef = useRef(false);
 
-  // スカウト者の一括反映（過去のExcelから・casts.scoutedByのみ更新。月別成績等には一切触れない）
-  const [scoutStoreId, setScoutStoreId] = useState("");
-  const [scoutFileName, setScoutFileName] = useState("");
-  const [scoutRows, setScoutRows] = useState<ReturnType<typeof parseMonthlyExcel>["rows"] | null>(null);
-  const [scoutParseError, setScoutParseError] = useState<string | null>(null);
-  const [scoutRunning, setScoutRunning] = useState(false);
-  const [scoutProgress, setScoutProgress] = useState<{ done: number; total: number } | null>(null);
-  const [scoutResult, setScoutResult] = useState<BulkScoutedByResult | null>(null);
-  const { casts: scoutCasts } = useCasts(scoutStoreId ? [scoutStoreId] : []);
-
   useEffect(() => {
     if (userDoc && !owner) router.replace("/dashboard");
   }, [userDoc, owner, router]);
@@ -78,18 +64,6 @@ export default function MigrationPage() {
   }, [owner]);
 
   const existingStoreIds = useMemo(() => stores.map((s) => s.id), [stores]);
-
-  const scoutPlan = useMemo<ScoutedByPlanRow[]>(
-    () => (scoutRows ? buildScoutedByPlan(scoutRows, scoutCasts) : []),
-    [scoutRows, scoutCasts]
-  );
-  const scoutUpdates = useMemo(() => scoutPlan.filter((p) => p.action === "update"), [scoutPlan]);
-  const scoutSkippedNoMatch = useMemo(
-    () => scoutPlan.filter((p) => p.action === "skip-no-match" || p.action === "skip-multiple-match"),
-    [scoutPlan]
-  );
-  const scoutSkippedSame = useMemo(() => scoutPlan.filter((p) => p.action === "skip-same"), [scoutPlan]);
-  const scoutSkippedNoValue = useMemo(() => scoutPlan.filter((p) => p.action === "skip-no-value"), [scoutPlan]);
 
   if (!owner) return null;
 
@@ -203,65 +177,6 @@ export default function MigrationPage() {
       });
     } finally {
       setBackfillRunning(false);
-    }
-  }
-
-  function onScoutFileSelected(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // 同じファイルの再選択を許可
-    if (!file) return;
-    setScoutParseError(null);
-    setScoutResult(null);
-    setScoutProgress(null);
-    setScoutRows(null);
-    setScoutFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const result = parseMonthlyExcel(reader.result as ArrayBuffer);
-        setScoutRows(result.rows);
-      } catch (err) {
-        setScoutParseError((err as Error).message);
-      }
-    };
-    reader.onerror = () => setScoutParseError("ファイルの読み込みに失敗しました");
-    reader.readAsArrayBuffer(file);
-  }
-
-  async function onRunScoutedByBulk() {
-    if (!firebaseUser || scoutRunning || scoutPlan.length === 0) return;
-    const updates = scoutPlan.filter((p) => p.action === "update");
-    if (updates.length === 0) return;
-    if (
-      !window.confirm(
-        `${updates.length}名のスカウト者を更新します。\n` +
-          "月別成績・時給・その他の項目は一切変更されません。実行しますか？"
-      )
-    ) {
-      return;
-    }
-    setScoutRunning(true);
-    setScoutResult(null);
-    setScoutProgress(null);
-    try {
-      const res = await applyScoutedByBulkPlan(
-        firebaseUser.uid,
-        userDoc?.displayName ?? "",
-        scoutStoreId,
-        scoutPlan,
-        (done, total) => setScoutProgress({ done, total })
-      );
-      setScoutResult(res);
-    } catch (err) {
-      setScoutResult({
-        updated: 0,
-        skipped: 0,
-        errors: 1,
-        errorMessages: [(err as Error).message],
-        skippedDetails: [],
-      });
-    } finally {
-      setScoutRunning(false);
     }
   }
 
@@ -462,162 +377,6 @@ export default function MigrationPage() {
                 <p key={i} style={{ marginTop: 4 }}>{m}</p>
               ))}
             </div>
-          )}
-        </section>
-
-        <section className="section-card" style={{ marginBottom: 16 }}>
-          <h2 style={{ marginBottom: 10 }}>スカウト者の一括反映（過去のExcelから）</h2>
-          <p className="page-sub" style={{ marginBottom: 10 }}>
-            過去の給与明細Excelにスカウト者が記録されている場合、既存キャストの
-            スカウト者欄（casts.scoutedBy）だけを一括で反映できます。月別成績・時給・
-            その他の項目は一切変更しません。照合は源氏名の完全一致のみで行い、
-            同名キャストが複数いる場合や一致するキャストが見つからない場合は
-            自動反映せず「対象外」として一覧に表示します（手入力での確認が必要です）。
-          </p>
-          <div className="filter-bar">
-            <select
-              className="form-input"
-              value={scoutStoreId}
-              onChange={(e) => {
-                setScoutStoreId(e.target.value);
-                setScoutRows(null);
-                setScoutResult(null);
-              }}
-              aria-label="対象店舗"
-            >
-              <option value="">対象店舗を選択</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <input
-              type="file"
-              accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-              onChange={onScoutFileSelected}
-              disabled={!scoutStoreId || scoutRunning}
-            />
-          </div>
-          {scoutFileName && <p className="page-sub" style={{ marginTop: 4 }}>選択中: {scoutFileName}</p>}
-          {scoutParseError && <div className="error-box" style={{ marginTop: 10 }}>{scoutParseError}</div>}
-
-          {scoutRows && (
-            <>
-              <div className="table-wrap" style={{ marginTop: 12 }}>
-                <table className="data-table">
-                  <tbody>
-                    <tr><td>検出行数</td><td className="num">{scoutRows.length}件</td></tr>
-                    <tr><td>反映対象（値が変わる）</td><td className="num">{scoutUpdates.length}件</td></tr>
-                    <tr>
-                      <td>スキップ：Excel側が空欄</td>
-                      <td className="num">{scoutSkippedNoValue.length}件</td>
-                    </tr>
-                    <tr>
-                      <td>スキップ：既に同じ値</td>
-                      <td className="num">{scoutSkippedSame.length}件</td>
-                    </tr>
-                    <tr>
-                      <td>対象外（一致キャスト無し・複数一致）</td>
-                      <td className="num">
-                        {scoutSkippedNoMatch.length > 0 ? (
-                          <span className="badge badge-orange">{scoutSkippedNoMatch.length}件</span>
-                        ) : (
-                          "0件"
-                        )}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {scoutUpdates.length > 0 && (
-                <div className="table-wrap" style={{ marginTop: 12 }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr><th>源氏名</th><th>現在のスカウト者</th><th>Excel側の値</th></tr>
-                    </thead>
-                    <tbody>
-                      {scoutUpdates.map((p) => (
-                        <tr key={p.rowNumber}>
-                          <td>{p.name}</td>
-                          <td className="dim">{p.currentScoutedBy || "未設定"}</td>
-                          <td>{p.excelScoutedBy}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {scoutSkippedNoMatch.length > 0 && (
-                <details style={{ marginTop: 10 }}>
-                  <summary>対象外の詳細（{scoutSkippedNoMatch.length}件）</summary>
-                  <div className="table-wrap" style={{ marginTop: 8 }}>
-                    <table className="data-table">
-                      <thead>
-                        <tr><th>源氏名</th><th>Excel側の値</th><th>理由</th></tr>
-                      </thead>
-                      <tbody>
-                        {scoutSkippedNoMatch.map((p) => (
-                          <tr key={p.rowNumber}>
-                            <td>{p.name}</td>
-                            <td>{p.excelScoutedBy}</td>
-                            <td>
-                              {p.action === "skip-no-match"
-                                ? "一致するキャストが見つかりません"
-                                : "同名キャストが複数存在するため自動反映していません"}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </details>
-              )}
-
-              <div style={{ marginTop: 12 }}>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => void onRunScoutedByBulk()}
-                  disabled={scoutRunning || scoutUpdates.length === 0}
-                >
-                  {scoutRunning ? "反映中…" : `スカウト者を一括反映（${scoutUpdates.length}件）`}
-                </button>
-              </div>
-
-              {scoutProgress && (
-                <p className="progress-note" style={{ marginTop: 10 }}>
-                  {scoutProgress.done} / {scoutProgress.total} 件
-                </p>
-              )}
-
-              {scoutResult && (
-                <div
-                  className={scoutResult.errors === 0 ? "info-box" : "error-box"}
-                  style={{ marginTop: 12 }}
-                >
-                  <strong>完了</strong>
-                  <p style={{ marginTop: 6 }}>
-                    更新 {scoutResult.updated}件 ／ スキップ {scoutResult.skipped}件 ／
-                    エラー {scoutResult.errors}件
-                  </p>
-                  {scoutResult.errorMessages.map((m, i) => (
-                    <p key={i} style={{ marginTop: 4 }}>{m}</p>
-                  ))}
-                  {scoutResult.skippedDetails.length > 0 && (
-                    <details style={{ marginTop: 8 }}>
-                      <summary>スキップ理由の詳細（{scoutResult.skippedDetails.length}件）</summary>
-                      {scoutResult.skippedDetails.map((s, i) => (
-                        <p key={i} className="page-sub" style={{ marginTop: 4 }}>
-                          「{s.name}」: {s.reason}
-                        </p>
-                      ))}
-                    </details>
-                  )}
-                </div>
-              )}
-            </>
           )}
         </section>
 
