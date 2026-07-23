@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
+import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
 import { useStores } from "@/hooks/useStores";
@@ -31,6 +32,7 @@ export default function OverdueInterviewsListPage() {
   const storeName = (id: string) => accessibleStores.find((s) => s.id === id)?.name ?? id;
 
   const [q, setQ] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
   const list = useMemo(
     () => calcOverdueInterviews({ casts, interviews, motivations }),
     [casts, interviews, motivations]
@@ -64,6 +66,8 @@ export default function OverdueInterviewsListPage() {
             aria-label="検索"
           />
         </div>
+
+        {actionError && <div className="error-box">{actionError}</div>}
 
         {loading || storesLoading ? (
           <div className="loading-block" style={{ padding: 60 }}>
@@ -109,6 +113,11 @@ export default function OverdueInterviewsListPage() {
                     >
                       {x.motiLevel}
                     </span>
+                  )}
+                  {x.interview && (
+                    <div style={{ marginLeft: "auto" }}>
+                      <DeleteInterviewButton interviewId={x.interview.id} onError={setActionError} />
+                    </div>
                   )}
                 </div>
               </div>
