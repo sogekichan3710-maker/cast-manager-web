@@ -126,7 +126,7 @@ export async function analyzeExcelBuffer(
   }
 
   throwIfAborted(signal);
-  return assembleParseResult(scans, names, { sheetName: opts.sheetName });
+  return assembleParseResult(scans, names, wb, { sheetName: opts.sheetName });
 }
 
 /** ファイル選択から解析までの一括実行（読込段階を含む） */
