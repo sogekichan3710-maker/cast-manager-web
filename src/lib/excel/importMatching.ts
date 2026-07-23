@@ -16,6 +16,17 @@ import type { ExcelMonthlyRow } from "./parseMonthlyExcel";
  *    照合ルールとの矛盾 がある場合のみ要確認
  *  - 完全一致が存在しない → 新規キャストとして扱う（自動確定）
  *  - 完全一致が複数 → 紐付け先の選択画面を表示（唯一の手動選択ケース）
+ *
+ * 照合ルール（nameMatchingRules）は次回インポート時の最優先ルールとして扱う。
+ * 一度「既存キャストへ紐付け」を保存すると、以降は
+ *  - 完全一致が複数（同名キャストが複数存在する）
+ *  - 時給差がある（ただし時給自体は自動更新しない。上書きしたい場合は
+ *    キャスト編集画面から変更するか、大きな差（WAGE_GAP_RECONFIRM以上）の
+ *    場合はルールが無効化され通常照合に戻る）
+ * のいずれであっても再確認せず、保存済みのキャストへ自動で紐付ける。
+ * ルールが無効化され通常照合に戻るのは、リンク先キャストが削除済み
+ * （存在しない）／店舗が異なる／アーカイブ済み／時給差が極端に大きい
+ * 場合のみ。
  */
 
 /** 照合に必要なキャスト情報（CastWithIdのサブセット） */
@@ -173,9 +184,6 @@ export function matchExcelRows(
           }
         }
       }
-      if (multipleSameName) {
-        ruleReconfirmReasons.push("同名キャストが複数存在します");
-      }
       if (rule.decision === "new" && exactInStore.length > 0) {
         // 以前「新規登録」で確定した名前でも、同名キャストが既に存在する場合は
         // 自動で再び新規登録しない（再インポートでのキャスト重複を防ぐ）
@@ -183,26 +191,27 @@ export function matchExcelRows(
           "以前は新規登録しましたが、同名キャストが既に存在するため再確認が必要です"
         );
       }
+      // 保存済み照合ルールは次回インポートの最優先ルールとして扱う。
+      // 「完全一致が複数（同名キャストが複数存在する）」はルールが既に
+      // どのキャストかを一意に特定しているため再確認しない。時給差についても、
+      // ルールで特定したキャストへの紐付けを妨げない（時給は上書きしない。
+      // 変更したい場合はキャスト編集画面から行う）。
+      // 唯一の例外はリンク先キャストが削除済み／店舗不一致／アーカイブ済み、
+      // または時給差が極端に大きい場合（上のブロックでruleReconfirmReasonsに
+      // 積まれ、下のelseで通常照合へフォールバックする）。
       if (ruleReconfirmReasons.length === 0) {
         if (rule.decision === "link" && rule.linkedCastId) {
           suggestedCastId = rule.linkedCastId;
           const linkedCast = castById.get(rule.linkedCastId)!;
-          if (
-            row.hourlyWage != null &&
-            row.hourlyWage > 0 &&
-            row.hourlyWage !== linkedCast.hourlyWage
-          ) {
-            suggestedAction = "wage-change";
-            wageChange = {
-              castId: linkedCast.id,
-              oldWage: linkedCast.hourlyWage,
-              newWage: row.hourlyWage,
-            };
-            needsConfirm = true; // 時給変更は常に確認
+          suggestedAction = "link";
+          wageChange = null;
+          sameNameConfirm = false;
+          if (linkedCast.status !== "在籍") {
+            statusConfirm = `在籍状態が「${linkedCast.status}」のキャストがExcelに含まれています`;
+            needsConfirm = true;
           } else {
-            suggestedAction = "link";
-            sameNameConfirm = false;
-            needsConfirm = statusConfirm !== null;
+            statusConfirm = null;
+            needsConfirm = false;
           }
         } else if (rule.decision === "new") {
           suggestedAction = "new";

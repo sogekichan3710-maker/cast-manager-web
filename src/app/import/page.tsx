@@ -583,6 +583,7 @@ export default function ImportPage() {
               {/* 集計バー + 未選択への導線（sticky） */}
               <div className="plan-summary-bar">
                 <span className="badge badge-green">自動確定 {summary.autoConfirmed}</span>
+                <span className="badge badge-purple">照合履歴から自動判定 {summary.ruleAutoApplied}</span>
                 <span className="badge badge-orange">要確認 {summary.needsConfirm}</span>
                 <span className={`badge ${summary.unresolved > 0 ? "badge-red" : "badge-gray"}`}>
                   未選択 {summary.unresolved}
@@ -779,6 +780,9 @@ export default function ImportPage() {
                     ／ スキップ {result.skipped} ／ エラー {result.errors} ／ 未処理 {result.unprocessed}件
                   </p>
                   <p className="page-sub" style={{ marginTop: 4 }}>
+                    うち照合履歴から自動判定：{summary.ruleAutoApplied}件
+                  </p>
+                  <p className="page-sub" style={{ marginTop: 4 }}>
                     このインポートは「インポート履歴」からBatch単位でロールバックできます。
                   </p>
                   {result.errorMessages.map((m, i) => (
@@ -960,6 +964,7 @@ function FinalConfirmModal({
               <tr><td>採用シート</td><td>{sheetName}</td></tr>
               <tr><td>検出キャスト数</td><td className="num">{detectedRows}件</td></tr>
               <tr><td>自動確定</td><td className="num">{summary.autoConfirmed}件</td></tr>
+              <tr><td>（うち）照合履歴から自動判定</td><td className="num">{summary.ruleAutoApplied}件</td></tr>
               <tr><td>新規キャスト登録</td><td className="num">{summary.newCasts}件</td></tr>
               <tr><td>既存キャストへ紐付け</td><td className="num">{summary.links}件</td></tr>
               <tr><td>既存成績の上書き</td><td className="num">{summary.overwrite}件</td></tr>
