@@ -28,7 +28,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, writeBatch } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -621,6 +621,39 @@ describe("PR3.5: 面談編集の保護", () => {
         updatedBy: UIDS.owner,
       })
     );
+  });
+});
+
+describe("PR10: 面談削除の保護（誤登録した面談履歴の削除機能）", () => {
+  it("ownerは面談を削除できる", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.owner), "interviews", "iv_seed")));
+  });
+  it("adminは許可店舗の面談を削除できる", async () => {
+    await assertSucceeds(deleteDoc(doc(dbAs(UIDS.adminV), "interviews", "iv_seed")));
+  });
+  it("adminは許可店舗外の面談を削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.adminV), "interviews", "iv_seed_regina")));
+  });
+  it("viewerは面談を削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAs(UIDS.viewerV), "interviews", "iv_seed")));
+  });
+  it("未ログインは面談を削除できない", async () => {
+    await assertFails(deleteDoc(doc(dbAnon(), "interviews", "iv_seed")));
+  });
+  it("面談削除と監査ログ(interview.delete)の同時書き込みが成功する（deleteInterviewサービスと同じ書き込みパターン）", async () => {
+    // 実装（recordService.deleteInterview）はrunTransactionで面談削除+監査ログ作成を
+    // 同時に行う。writeBatchでも同じくFirestore Rulesはドキュメント単位で
+    // 評価されるため、この組み合わせで再現できる。
+    const db = dbAs(UIDS.adminV);
+    const batch = writeBatch(db);
+    batch.delete(doc(db, "interviews", "iv_seed"));
+    batch.set(doc(db, "auditLogs", "log_interview_delete"), {
+      userId: UIDS.adminV, userName: "admin", action: "interview.delete",
+      collection: "interviews", documentId: "iv_seed",
+      storeId: STORE_VIRGO, before: { castId: "cast_virgo_1" }, after: null,
+      createdAt: serverTimestamp(),
+    });
+    await assertSucceeds(batch.commit());
   });
 });
 

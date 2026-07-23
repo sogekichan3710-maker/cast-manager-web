@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
+import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
 import { useStores } from "@/hooks/useStores";
@@ -28,6 +29,7 @@ export default function UpcomingInterviewsListPage() {
   const { interviews, loading } = useDashboardData(targetStoreIds);
 
   const [q, setQ] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
   const list = useMemo(
     () => calcUpcomingInterviews({ casts, interviews, limit: Infinity }),
     [casts, interviews]
@@ -62,6 +64,8 @@ export default function UpcomingInterviewsListPage() {
           />
         </div>
 
+        {actionError && <div className="error-box">{actionError}</div>}
+
         {loading || storesLoading ? (
           <div className="loading-block" style={{ padding: 60 }}>
             <div className="spinner" aria-hidden />
@@ -79,6 +83,9 @@ export default function UpcomingInterviewsListPage() {
                     {x.cast.stageName}
                   </Link>
                   {x.interview.nextTask && <span className="dim">{x.interview.nextTask}</span>}
+                  <div style={{ marginLeft: "auto" }}>
+                    <DeleteInterviewButton interviewId={x.interview.id} onError={setActionError} />
+                  </div>
                 </div>
               </div>
             ))}

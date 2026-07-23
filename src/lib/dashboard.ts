@@ -228,6 +228,8 @@ export interface OverdueEntry {
   noRecord: boolean;
   followNeed: string;
   motiLevel: string;
+  /** 最新面談の実体（未面談の場合はnull）。一覧画面での削除操作に使う（PR10） */
+  interview: InterviewWithId | null;
 }
 
 /**
@@ -274,6 +276,7 @@ export function calcOverdueInterviews(params: {
         noRecord,
         followNeed: iv?.follow ?? "",
         motiLevel: latestMoti.get(c.id)?.level ?? "",
+        interview: iv,
       };
     })
     .filter((x) => x.noRecord || (x.elapsed !== null && x.elapsed >= 30));

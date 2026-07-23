@@ -414,6 +414,53 @@ export async function updateInterview(
   });
 }
 
+/**
+ * 面談記録を削除する（owner/admin専用・Rulesでも制限）。
+ * 誤って登録した面談履歴を削除するための機能。
+ *
+ * 面談の削除は目標(goals)・モチベーション(motivations)・成績(monthlyResults)
+ * とは別レコードのため、それらのドキュメントには一切影響しない。
+ * 次回面談日・フォロー必要度・面談件数などはいずれも interviews
+ * コレクションをリアルタイム購読（onSnapshot）した結果から都度計算する値
+ * であり、キャスト等に非正規化して保存されていないため、削除するだけで
+ * 一覧・キャスト詳細・ダッシュボードに自動的に整合した内容が反映される
+ * （孤立データや参照切れは発生しない）。
+ */
+export async function deleteInterview(
+  actorUid: string,
+  actorName: string,
+  interviewId: string
+): Promise<void> {
+  const db = getDb();
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, "interviews", interviewId);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("面談記録が見つかりません");
+    const current = snap.data() as InterviewDoc;
+    tx.delete(ref);
+    addAuditLogToTransaction(tx, {
+      actorUid,
+      actorName,
+      action: "interview.delete",
+      collection: "interviews",
+      documentId: interviewId,
+      storeId: current.storeId,
+      before: {
+        castId: current.castId,
+        date: current.date,
+        interviewer: current.interviewer,
+        follow: current.follow,
+        nextDate: current.nextDate,
+        content: current.content,
+        worries: current.worries,
+        decisions: current.decisions,
+        nextTask: current.nextTask,
+      },
+      after: null,
+    });
+  });
+}
+
 /** 時給変更を記録し、キャストの時給も更新する（追記のみのwageHistoryへ） */
 export async function recordWageChange(
   actorUid: string,

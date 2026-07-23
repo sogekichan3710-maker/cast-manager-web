@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
+import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
 import { useStores } from "@/hooks/useStores";
@@ -28,6 +29,7 @@ export default function FollowHighListPage() {
   const { interviews, loading } = useDashboardData(targetStoreIds);
 
   const [q, setQ] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
   const list = useMemo(() => calcFollowHigh({ casts, interviews }), [casts, interviews]);
   const filtered = useMemo(
     () => (q.trim() ? list.filter((x) => x.cast.stageName.includes(q.trim())) : list),
@@ -59,6 +61,8 @@ export default function FollowHighListPage() {
           />
         </div>
 
+        {actionError && <div className="error-box">{actionError}</div>}
+
         {loading || storesLoading ? (
           <div className="loading-block" style={{ padding: 60 }}>
             <div className="spinner" aria-hidden />
@@ -75,6 +79,9 @@ export default function FollowHighListPage() {
                     {x.cast.stageName}
                   </Link>
                   <span className="dim">最終面談 {x.interview.date}</span>
+                  <div style={{ marginLeft: "auto" }}>
+                    <DeleteInterviewButton interviewId={x.interview.id} onError={setActionError} />
+                  </div>
                 </div>
                 {x.interview.content && (
                   <p className="record-text dim">{x.interview.content}</p>

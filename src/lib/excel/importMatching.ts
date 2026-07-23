@@ -28,6 +28,11 @@ export interface MatchableCast {
   hourlyWage: number;
   status: CastStatus;
   archived: boolean;
+  /**
+   * スカウト者（PR10で追加・表示専用）。照合の判定には一切使わず、
+   * 照合確認画面で「同一人物か別人か」の判断材料として表示するために保持する。
+   */
+  scoutedBy: string;
 }
 
 export type RowAction = "link" | "new" | "wage-change" | "exclude";

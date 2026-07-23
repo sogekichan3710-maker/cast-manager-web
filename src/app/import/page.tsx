@@ -275,6 +275,7 @@ export default function ImportPage() {
         hourlyWage: c.hourlyWage,
         status: c.status,
         archived: c.archived,
+        scoutedBy: c.scoutedBy ?? "",
       }));
       const mr = await matchExcelRowsChunked(parseResult.rows, storeId, matchable, rules, {
         signal: controller.signal,
@@ -1042,6 +1043,7 @@ function RowCard({
         <span className="page-sub">
           売上 ¥{row.totalSales.toLocaleString()}
           {row.hourlyWage != null && ` ／ Excel時給 ¥${row.hourlyWage.toLocaleString()}`}
+          {row.scoutedBy && ` ／ Excelスカウト者: ${row.scoutedBy}`}
         </span>
       </div>
 
@@ -1077,6 +1079,12 @@ function RowCard({
               {c.cast.realName && `（本名: ${c.cast.realName}）`}
               ／ 現在時給 ¥{c.cast.hourlyWage.toLocaleString()}
               {row.hourlyWage != null && ` ／ Excel時給 ¥${row.hourlyWage.toLocaleString()}`}
+              ／ 現在スカウト者: {c.cast.scoutedBy || "未設定"}
+              {row.scoutedBy && row.scoutedBy !== c.cast.scoutedBy && (
+                <span className="badge badge-yellow" style={{ marginLeft: 4 }}>
+                  → {row.scoutedBy} に変更
+                </span>
+              )}
               ／ {c.reason}
               {c.cast.status !== "在籍" && ` ／ ${c.cast.status}`}
               {c.cast.archived && " ／ アーカイブ済み"}

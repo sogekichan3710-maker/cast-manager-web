@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { DiffAmount } from "@/components/DiffAmount";
 import { InterviewEditModal } from "@/components/InterviewEditModal";
 import { MonthlyResultFormModal } from "@/components/MonthlyResultFormModal";
@@ -230,13 +231,12 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
                   </span>
                 )}
                 {canEdit && (
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ marginLeft: "auto" }}
-                    onClick={() => setIvEdit(iv)}
-                  >
-                    編集
-                  </button>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setIvEdit(iv)}>
+                      編集
+                    </button>
+                    <DeleteInterviewButton interviewId={iv.id} onError={setError} />
+                  </div>
                 )}
               </div>
               {iv.content && <p className="record-text">{iv.content}</p>}
