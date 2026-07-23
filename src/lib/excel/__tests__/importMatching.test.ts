@@ -253,26 +253,43 @@ describe("nameMatchingRules の適用", () => {
     expect(matches[0].needsConfirm).toBe(true);
   });
 
-  it("同名候補が複数存在 → ルールがあっても再確認", () => {
+  it("同名候補が複数存在してもルールが対象キャストを一意に特定していれば自動採用する（再確認しない）", () => {
     const { matches } = matchExcelRows(
       [row("あいり", 5000)],
       "virgo",
       [cast({ id: "c1" }), cast({ id: "c2" })],
-      [rule({})]
+      [rule({ linkedCastId: "c1" })]
     );
-    expect(matches[0].ruleReconfirmReasons.some((r) => r.includes("同名"))).toBe(true);
-    expect(matches[0].needsConfirm).toBe(true);
+    const m = matches[0];
+    expect(m.ruleReconfirmReasons).toEqual([]);
+    expect(m.needsConfirm).toBe(false);
+    expect(m.suggestedAction).toBe("link");
+    expect(m.suggestedCastId).toBe("c1");
   });
 
-  it("ルール適用でも時給が異なれば時給変更確認になる（自動確定しない）", () => {
+  it("ルール適用時は時給が異なっても再確認せず自動採用する（時給自体は変更しない）", () => {
     const { matches } = matchExcelRows(
-      [row("あいり", 5200)], // 差200円 < 再確認閾値だが変更自体の確認は必要
+      [row("あいり", 5200)], // 差200円 < 再確認閾値
       "virgo",
       [cast({})],
       [rule({})]
     );
     const m = matches[0];
-    expect(m.suggestedAction).toBe("wage-change");
+    expect(m.suggestedAction).toBe("link");
+    expect(m.wageChange).toBeNull();
+    expect(m.needsConfirm).toBe(false);
+  });
+
+  it("ルールのリンク先キャストが退店・休職の場合は再確認する", () => {
+    const { matches } = matchExcelRows(
+      [row("あいり", 5000)],
+      "virgo",
+      [cast({ status: "退店" })],
+      [rule({})]
+    );
+    const m = matches[0];
+    expect(m.suggestedAction).toBe("link");
+    expect(m.statusConfirm).toContain("退店");
     expect(m.needsConfirm).toBe(true);
   });
 

@@ -63,6 +63,12 @@ export interface PlanSummary {
   total: number;
   /** 自動確定済み */
   autoConfirmed: number;
+  /**
+   * 自動確定済みのうち、保存済み照合ルール（nameMatchingRules）が
+   * 優先適用されたことで確認不要になった件数（完全一致1名の自然な
+   * 自動確定・完全一致なしの新規登録は含まない）
+   */
+  ruleAutoApplied: number;
   /** 要確認（照合時点で確認が必要と判定された行） */
   needsConfirm: number;
   /** 新規キャスト登録 */
@@ -85,6 +91,7 @@ export function summarizePlan(states: PlanRowState[]): PlanSummary {
   const s: PlanSummary = {
     total: states.length,
     autoConfirmed: 0,
+    ruleAutoApplied: 0,
     needsConfirm: 0,
     newCasts: 0,
     links: 0,
@@ -96,6 +103,7 @@ export function summarizePlan(states: PlanRowState[]): PlanSummary {
   };
   for (const st of states) {
     if (st.autoConfirmed) s.autoConfirmed++;
+    if (st.match.ruleApplied && st.match.ruleReconfirmReasons.length === 0) s.ruleAutoApplied++;
     if (st.match.needsConfirm) s.needsConfirm++;
     if (st.action === null) {
       s.unresolved++;
