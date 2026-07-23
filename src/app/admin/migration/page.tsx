@@ -88,6 +88,8 @@ export default function MigrationPage() {
     () => scoutPlan.filter((p) => p.action === "skip-no-match" || p.action === "skip-multiple-match"),
     [scoutPlan]
   );
+  const scoutSkippedSame = useMemo(() => scoutPlan.filter((p) => p.action === "skip-same"), [scoutPlan]);
+  const scoutSkippedNoValue = useMemo(() => scoutPlan.filter((p) => p.action === "skip-no-value"), [scoutPlan]);
 
   if (!owner) return null;
 
@@ -256,6 +258,7 @@ export default function MigrationPage() {
         skipped: 0,
         errors: 1,
         errorMessages: [(err as Error).message],
+        skippedDetails: [],
       });
     } finally {
       setScoutRunning(false);
@@ -507,6 +510,14 @@ export default function MigrationPage() {
                     <tr><td>検出行数</td><td className="num">{scoutRows.length}件</td></tr>
                     <tr><td>反映対象（値が変わる）</td><td className="num">{scoutUpdates.length}件</td></tr>
                     <tr>
+                      <td>スキップ：Excel側が空欄</td>
+                      <td className="num">{scoutSkippedNoValue.length}件</td>
+                    </tr>
+                    <tr>
+                      <td>スキップ：既に同じ値</td>
+                      <td className="num">{scoutSkippedSame.length}件</td>
+                    </tr>
+                    <tr>
                       <td>対象外（一致キャスト無し・複数一致）</td>
                       <td className="num">
                         {scoutSkippedNoMatch.length > 0 ? (
@@ -594,6 +605,16 @@ export default function MigrationPage() {
                   {scoutResult.errorMessages.map((m, i) => (
                     <p key={i} style={{ marginTop: 4 }}>{m}</p>
                   ))}
+                  {scoutResult.skippedDetails.length > 0 && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary>スキップ理由の詳細（{scoutResult.skippedDetails.length}件）</summary>
+                      {scoutResult.skippedDetails.map((s, i) => (
+                        <p key={i} className="page-sub" style={{ marginTop: 4 }}>
+                          「{s.name}」: {s.reason}
+                        </p>
+                      ))}
+                    </details>
+                  )}
                 </div>
               )}
             </>

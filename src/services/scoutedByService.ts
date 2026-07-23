@@ -36,6 +36,8 @@ export interface BulkScoutedByResult {
   skipped: number;
   errors: number;
   errorMessages: string[];
+  /** スキップされた対象の内訳（実行時点で既に同じ値になっていた等） */
+  skippedDetails: { name: string; reason: string }[];
 }
 
 /**
@@ -57,6 +59,7 @@ export async function applyScoutedByBulkPlan(
   let updated = 0;
   let skipped = 0;
   const errorMessages: string[] = [];
+  const skippedDetails: { name: string; reason: string }[] = [];
 
   for (let i = 0; i < targets.length; i++) {
     const p = targets[i];
@@ -76,6 +79,10 @@ export async function applyScoutedByBulkPlan(
         });
       } else {
         skipped++;
+        skippedDetails.push({
+          name: p.name,
+          reason: "実行時点で既に同じ値だったためスキップしました（他の操作と競合した可能性があります）",
+        });
       }
     } catch (err) {
       errorMessages.push(`「${p.name}」: ${(err as Error).message}`);
@@ -83,5 +90,5 @@ export async function applyScoutedByBulkPlan(
     onProgress?.(i + 1, targets.length);
   }
 
-  return { updated, skipped, errors: errorMessages.length, errorMessages };
+  return { updated, skipped, errors: errorMessages.length, errorMessages, skippedDetails };
 }
