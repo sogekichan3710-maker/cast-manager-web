@@ -10,6 +10,7 @@ import { RecordFormModal } from "@/components/RecordFormModal";
 import { TrendChart } from "@/components/TrendChart";
 import { subscribeMonthlyResultsByCast } from "@/services/monthlyResultService";
 import {
+  deleteInterview,
   recordWageChange,
   subscribeGoals,
   subscribeInterviews,
@@ -82,6 +83,21 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
   const [recFormOpen, setRecFormOpen] = useState(false);
   const [ivEdit, setIvEdit] = useState<InterviewWithId | null>(null);
   const [wageFormOpen, setWageFormOpen] = useState(false);
+  const [ivDeletingId, setIvDeletingId] = useState<string | null>(null);
+
+  async function onDeleteInterview(iv: InterviewWithId) {
+    if (!firebaseUser || ivDeletingId) return;
+    if (!window.confirm("この面談履歴を削除しますか？\nこの操作は元に戻せません。")) return;
+    setIvDeletingId(iv.id);
+    setError(null);
+    try {
+      await deleteInterview(firebaseUser.uid, userDoc?.displayName ?? "", iv.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIvDeletingId(null);
+    }
+  }
 
   return (
     <>
@@ -230,13 +246,18 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
                   </span>
                 )}
                 {canEdit && (
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ marginLeft: "auto" }}
-                    onClick={() => setIvEdit(iv)}
-                  >
-                    編集
-                  </button>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setIvEdit(iv)}>
+                      編集
+                    </button>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      disabled={ivDeletingId === iv.id}
+                      onClick={() => void onDeleteInterview(iv)}
+                    >
+                      {ivDeletingId === iv.id ? "削除中…" : "削除"}
+                    </button>
+                  </div>
                 )}
               </div>
               {iv.content && <p className="record-text">{iv.content}</p>}

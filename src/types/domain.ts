@@ -553,6 +553,7 @@ export const AUDIT_ACTIONS = [
   "monthlyResult.delete",
   "interview.create",
   "interview.update",
+  "interview.delete",
   "goal.upsert",
   "motivation.create",
   "wageHistory.add",

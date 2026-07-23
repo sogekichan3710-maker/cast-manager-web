@@ -53,13 +53,14 @@ export default function CastsPage() {
       if (statusFilter && c.status !== statusFilter) return false;
       if (rankFilter && c.rank !== rankFilter) return false;
       if (query) {
-        // 既存ローカル版と同じ対象: 源氏名・本名・メモ・担当者（＋ふりがな）
+        // 既存ローカル版と同じ対象: 源氏名・本名・メモ・担当者（＋ふりがな・スカウト者）
         const hit =
           norm(c.stageName ?? "").includes(query) ||
           norm(c.realName ?? "").includes(query) ||
           norm(c.kana ?? "").includes(query) ||
           norm(c.memo ?? "").includes(query) ||
-          norm(c.manager ?? "").includes(query);
+          norm(c.manager ?? "").includes(query) ||
+          norm(c.scoutedBy ?? "").includes(query);
         if (!hit) return false;
       }
       return true;
@@ -143,7 +144,7 @@ export default function CastsPage() {
           </select>
           <input
             className="form-input"
-            placeholder="源氏名・本名・ふりがな・メモ・担当者で検索"
+            placeholder="源氏名・本名・ふりがな・メモ・担当者・スカウト者で検索"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             aria-label="検索"
@@ -211,6 +212,7 @@ export default function CastsPage() {
                 <tr>
                   <th>源氏名</th>
                   <th>本名</th>
+                  <th>スカウト者</th>
                   <th>店舗</th>
                   <th>状態</th>
                   <th>ランク</th>
@@ -228,6 +230,7 @@ export default function CastsPage() {
                       {c.archived && <span className="badge badge-gray">アーカイブ</span>}
                     </td>
                     <td className="dim">{c.realName || "—"}</td>
+                    <td className="dim">{c.scoutedBy || "—"}</td>
                     <td>{storeNameOf(c.storeId)}</td>
                     <td>
                       <StatusBadge status={c.status} />

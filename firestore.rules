@@ -334,7 +334,8 @@ service cloud.firestore {
         && request.resource.data.action in [
              'cast.create', 'cast.update', 'cast.archive', 'cast.restore',
              'monthlyResult.create', 'monthlyResult.update', 'monthlyResult.delete',
-             'interview.create', 'interview.update', 'goal.upsert', 'motivation.create',
+             'interview.create', 'interview.update', 'interview.delete',
+             'goal.upsert', 'motivation.create',
              'wageHistory.add', 'import.execute', 'import.rollback',
              'migration.execute', 'backup.export'
            ];

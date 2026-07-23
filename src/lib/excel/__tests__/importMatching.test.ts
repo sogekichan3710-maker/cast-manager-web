@@ -39,6 +39,7 @@ function cast(partial: Partial<MatchableCast>): MatchableCast {
     hourlyWage: 5000,
     status: "在籍",
     archived: false,
+    scoutedBy: "",
     ...partial,
   };
 }
@@ -84,6 +85,17 @@ describe("matchExcelRows: 基本照合", () => {
     const { matches } = matchExcelRows([row("ももか")], "virgo", [cast({})], []);
     expect(matches[0].suggestedAction).toBe("new");
     expect(matches[0].candidates).toHaveLength(0);
+  });
+
+  it("候補のscoutedByは照合判定に影響せず、表示用にそのまま保持される（PR10）", () => {
+    const { matches } = matchExcelRows(
+      [row("あいり", 5000)],
+      "virgo",
+      [cast({ scoutedBy: "田中" })],
+      []
+    );
+    expect(matches[0].suggestedAction).toBe("link");
+    expect(matches[0].candidates[0].cast.scoutedBy).toBe("田中");
   });
 });
 

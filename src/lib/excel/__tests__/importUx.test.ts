@@ -57,6 +57,7 @@ function cast(partial: Partial<MatchableCast>): MatchableCast {
     hourlyWage: 5000,
     status: "在籍",
     archived: false,
+    scoutedBy: "",
     ...partial,
   };
 }
