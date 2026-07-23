@@ -85,7 +85,17 @@ export interface ExcelParseResult {
 const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber">, string[]> = {
   name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
-  scoutedBy: ["スカウト者", "スカウト", "スカウト担当", "scoutedby", "scout"],
+  scoutedBy: [
+    "スカウト者",
+    "スカウト",
+    "スカウト担当",
+    "スカウト者名",
+    "スカウト担当者",
+    "スカウトマン",
+    "紹介者",
+    "scoutedby",
+    "scout",
+  ],
   totalSales: ["総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
   // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
   // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
