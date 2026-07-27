@@ -417,27 +417,31 @@ export async function executeExcelImport(
           return { outcome: "skipped" as const, before: mrBusinessFields(cur), payloadTotalSales: data.totalSales };
         });
         // 再インポート時の追跡ログ（Excel値・既存値・保存payload・保存後の再取得値を
-        // 1行ずつ対応付ける。再取得は書き込みが実際に反映されたかの検証を兼ねる）
-        try {
-          const verifySnap = await getDoc(mrRef);
-          const afterTotalSales = verifySnap.exists()
-            ? (verifySnap.data() as MonthlyResultDoc).totalSales
-            : null;
-          console.info("[excelImport:monthlyResults]", {
-            rowNumber: d.row.rowNumber,
-            name: d.row.name,
-            castId,
-            docId: mrRef.id,
-            existingDecision: d.existing,
-            excelTotalSales: d.row.totalSales,
-            beforeTotalSales:
-              (mrOutcome.before as { totalSales?: number } | null)?.totalSales ?? null,
-            payloadTotalSales: mrOutcome.payloadTotalSales,
-            afterTotalSales,
-            outcome: mrOutcome.outcome,
-          });
-        } catch {
-          // 追跡ログ用の再取得失敗はインポート結果自体には影響させない
+        // 1行ずつ対応付ける。再取得は書き込みが実際に反映されたかの検証を兼ねる）。
+        // 開発環境のみ出力し、本番・プレビューではConsoleを汚さない
+        // （追加のFirestore読み取りも本番では発生させない）
+        if (process.env.NODE_ENV !== "production") {
+          try {
+            const verifySnap = await getDoc(mrRef);
+            const afterTotalSales = verifySnap.exists()
+              ? (verifySnap.data() as MonthlyResultDoc).totalSales
+              : null;
+            console.info("[excelImport:monthlyResults]", {
+              rowNumber: d.row.rowNumber,
+              name: d.row.name,
+              castId,
+              docId: mrRef.id,
+              existingDecision: d.existing,
+              excelTotalSales: d.row.totalSales,
+              beforeTotalSales:
+                (mrOutcome.before as { totalSales?: number } | null)?.totalSales ?? null,
+              payloadTotalSales: mrOutcome.payloadTotalSales,
+              afterTotalSales,
+              outcome: mrOutcome.outcome,
+            });
+          } catch {
+            // 追跡ログ用の再取得失敗はインポート結果自体には影響させない
+          }
         }
         if (mrOutcome.outcome === "created") {
           created++;
