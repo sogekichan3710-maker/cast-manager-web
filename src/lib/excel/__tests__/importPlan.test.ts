@@ -91,10 +91,10 @@ describe("buildInitialRowStates（初期状態）", () => {
     expect(canExecutePlan(states)).toBe(true);
   });
 
-  it("既存成績がある行の初期状態はスキップ（上書きは明示選択のみ）", () => {
+  it("既存成績がある行の初期状態は上書き（同一年月の再インポートは既定で数値を更新する）", () => {
     const { matches } = matchExcelRows([row("あいり")], "virgo", [cast({})], []);
     const states = buildInitialRowStates(matches, new Set(["c1"]));
-    expect(states[0].existing).toBe("skip");
+    expect(states[0].existing).toBe("overwrite");
   });
 });
 
@@ -128,7 +128,7 @@ describe("summarizePlan / canExecutePlan（最終確認画面）", () => {
 describe("2回連続インポートの冪等性", () => {
   const excelRows = [row("あいり", 4), row("ももか", 5, 4500)];
 
-  it("1回目: 完全一致なし→自動新規 → 2回目: 完全一致で自動紐付け+既存スキップになり重複しない", () => {
+  it("1回目: 完全一致なし→自動新規 → 2回目: 完全一致で自動紐付け+既存上書き更新になり重複登録はしない", () => {
     // ---- 1回目: キャストなし・ルールなし → 全行自動で新規 ----
     const first = matchExcelRows(excelRows, "virgo", [], []);
     const firstStates = buildInitialRowStates(first.matches, new Set());
@@ -156,12 +156,12 @@ describe("2回連続インポートの冪等性", () => {
     // ルールで自動紐付けされ、新規登録は提案されない
     expect(second.matches.every((m) => m.ruleApplied)).toBe(true);
     expect(secondStates.every((s) => s.action === "link")).toBe(true);
-    // 既存成績はスキップが初期値 → そのまま実行しても二重登録されない
-    expect(secondStates.every((s) => s.existing === "skip")).toBe(true);
+    // 既存成績は上書きが初期値 → そのまま実行しても重複登録はされず、最新の数値に更新される
+    expect(secondStates.every((s) => s.existing === "overwrite")).toBe(true);
     const s = summarizePlan(secondStates);
     expect(s.newCasts).toBe(0);
-    expect(s.overwrite).toBe(0);
-    expect(s.skipExisting).toBe(2);
+    expect(s.overwrite).toBe(2);
+    expect(s.skipExisting).toBe(0);
     expect(canExecutePlan(secondStates)).toBe(true);
   });
 

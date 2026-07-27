@@ -590,6 +590,10 @@ export default function ImportPage() {
                 </span>
                 <span className="badge badge-gray">新規 {summary.newCasts}</span>
                 <span className="badge badge-gray">紐付け {summary.links}</span>
+                <span className="badge badge-green">既存を上書き更新 {summary.overwrite}</span>
+                <span className={`badge ${summary.skipExisting > 0 ? "badge-yellow" : "badge-gray"}`}>
+                  既存をスキップ {summary.skipExisting}
+                </span>
                 <span className="badge badge-gray">時給変更 {summary.wageChanges}</span>
                 <span className="badge badge-gray">除外 {summary.excluded}</span>
                 {summary.unresolved > 0 && (
@@ -967,7 +971,17 @@ function FinalConfirmModal({
               <tr><td>（うち）照合履歴から自動判定</td><td className="num">{summary.ruleAutoApplied}件</td></tr>
               <tr><td>新規キャスト登録</td><td className="num">{summary.newCasts}件</td></tr>
               <tr><td>既存キャストへ紐付け</td><td className="num">{summary.links}件</td></tr>
-              <tr><td>既存成績の上書き</td><td className="num">{summary.overwrite}件</td></tr>
+              <tr><td>既存成績の上書き更新</td><td className="num">{summary.overwrite}件</td></tr>
+              <tr>
+                <td>既存成績のスキップ（維持）</td>
+                <td className="num">
+                  {summary.skipExisting > 0 ? (
+                    <span className="badge badge-yellow">{summary.skipExisting}件</span>
+                  ) : (
+                    "0件"
+                  )}
+                </td>
+              </tr>
               <tr><td>時給変更として処理</td><td className="num">{summary.wageChanges}件</td></tr>
               <tr><td>在籍状態の変更</td><td className="num">{statusChangeCount}件</td></tr>
               <tr><td>除外</td><td className="num">{summary.excluded}件</td></tr>
@@ -1140,6 +1154,7 @@ function RowCard({
         <div style={{ marginTop: 8 }}>
           <div className="candidate">
             この月の成績が既に存在します（総売上 ¥{existing.totalSales.toLocaleString()}）。
+            既定では今回の数値で上書き更新されます。既存の値を維持したい場合のみ「既存を維持してスキップ」を選択してください。
           </div>
           <div className="import-actions">
             <button
