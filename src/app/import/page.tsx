@@ -681,6 +681,8 @@ export default function ImportPage() {
                     key={rowStates[idx].match.row.rowNumber}
                     rs={rowStates[idx]}
                     existingMap={existingMap}
+                    sheetName={parseResult?.sheetName ?? ""}
+                    totalSalesColumnLabel={parseResult?.headerMap.totalSales ?? ""}
                     onChange={(patch) => updateRow(idx, patch)}
                     disabled={running}
                   />
@@ -1034,11 +1036,15 @@ const ACTION_LABELS: Record<RowAction, string> = {
 function RowCard({
   rs,
   existingMap,
+  sheetName,
+  totalSalesColumnLabel,
   onChange,
   disabled,
 }: {
   rs: RowState;
   existingMap: Map<string, MonthlyResultWithId>;
+  sheetName: string;
+  totalSalesColumnLabel: string;
   onChange: (patch: Partial<RowState>) => void;
   disabled: boolean;
 }) {
@@ -1049,6 +1055,7 @@ function RowCard({
       ? existingMap.get(rs.castId)
       : undefined;
   const linkedCandidate = match.candidates.find((c) => c.cast.id === rs.castId);
+  const salesDiff = existing ? row.totalSales - existing.totalSales : null;
 
   return (
     <div className="import-row-card" id={`import-row-${row.rowNumber}`}>
@@ -1077,6 +1084,33 @@ function RowCard({
           {row.scoutedBy && ` ／ Excelスカウト者: ${row.scoutedBy}`}
         </span>
       </div>
+
+      {/* 売上トレース（今回Excel値 / 現在Firestore値 / 差額 / 読み取り元シート・列・セル番地） */}
+      <div className="page-sub" style={{ marginTop: 2, marginBottom: 6 }}>
+        Excel総売上 ¥{row.totalSales.toLocaleString()}
+        {" ／ "}
+        現在Firestore総売上 {existing ? `¥${existing.totalSales.toLocaleString()}` : "（データなし）"}
+        {salesDiff !== null && (
+          <>
+            {" ／ "}
+            差額 {salesDiff >= 0 ? "+" : ""}
+            ¥{salesDiff.toLocaleString()}
+          </>
+        )}
+        {" ／ "}
+        シート「{sheetName || "―"}」
+        {" ／ "}
+        列「{totalSalesColumnLabel || "―"}」
+        {" ／ "}
+        セル{row.totalSalesCell?.address ?? "―"}
+      </div>
+      {row.totalSalesCell?.formula && (
+        <div className="candidate" style={{ color: "var(--acc2)" }}>
+          ⚠ 総売上セル（{row.totalSalesCell.address}）は数式です（=
+          {row.totalSalesCell.formula}）。xlsxはExcel保存時点のキャッシュ値を読み込むため、
+          Excelで再計算（Ctrl+Alt+F9等）してから上書き保存したファイルかご確認ください。
+        </div>
+      )}
 
       {match.ruleReconfirmReasons.length > 0 && (
         <div className="candidate" style={{ color: "var(--acc2)" }}>

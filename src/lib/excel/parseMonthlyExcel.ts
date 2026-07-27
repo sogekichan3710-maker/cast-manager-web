@@ -18,6 +18,19 @@ import * as XLSX from "xlsx";
  * UI側でシートの手動選択・除外行の確認ができるようにする。
  */
 
+/**
+ * セル参照情報（照合確認画面でのトレース表示用）。
+ * formula が非nullの場合、totalSales はそのセルの数式ではなく
+ * ファイル保存時点のキャッシュ値（cell.v）である点に注意
+ * （xlsxはブラウザ上で数式を再計算しない）。
+ */
+export interface ExcelCellRef {
+  /** 例: "F12"（1始まりのExcel表記） */
+  address: string;
+  /** セルが数式の場合はその式（例: "=C12*D12"）。数式でなければ null */
+  formula: string | null;
+}
+
 export interface ExcelMonthlyRow {
   /** Excel上の行番号（1始まり・表示用） */
   rowNumber: number;
@@ -27,6 +40,11 @@ export interface ExcelMonthlyRow {
   /** スカウト者（PR6で追加）。列が存在しない場合は空文字 */
   scoutedBy: string;
   totalSales: number;
+  /**
+   * 総売上セルの参照情報（照合確認画面でのトレース表示用）。
+   * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
+   */
+  totalSalesCell?: ExcelCellRef | null;
   payment: number;
   honshimeiCount: number;
   honshimeiGroupCount: number;
@@ -110,7 +128,7 @@ export interface ScoutedByDebugInfo {
  * （源氏名 / 時給 / 出勤数 / 労働時間 / 同伴組 / 本指名 / 場内 / 売上 /
  *   総支給額）を含む。同義列が複数あるシートでは先頭の別名を優先する。
  */
-const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber">, string[]> = {
+const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSalesCell">, string[]> = {
   name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
   scoutedBy: [
@@ -311,10 +329,12 @@ function actualUsedRange(ws: XLSX.WorkSheet): XLSX.Range | null {
  * 発動する最終手段の安全装置。この場合のみ本当にデータを切り捨てるため
  * truncated を立てて警告表示に使う。
  */
-function safeGridFromSheet(ws: XLSX.WorkSheet): { grid: unknown[][]; truncated: boolean } {
-  if (!ws["!ref"]) return { grid: [], truncated: false };
+function safeGridFromSheet(
+  ws: XLSX.WorkSheet
+): { grid: unknown[][]; truncated: boolean; origin: { r: number; c: number } } {
+  if (!ws["!ref"]) return { grid: [], truncated: false, origin: { r: 0, c: 0 } };
   const used = actualUsedRange(ws);
-  if (!used) return { grid: [], truncated: false };
+  if (!used) return { grid: [], truncated: false, origin: { r: 0, c: 0 } };
 
   const truncated = used.e.r + 1 > ABSOLUTE_MAX_ROWS || used.e.c + 1 > ABSOLUTE_MAX_COLS;
   const range: XLSX.Range = truncated
@@ -327,7 +347,7 @@ function safeGridFromSheet(ws: XLSX.WorkSheet): { grid: unknown[][]; truncated: 
     defval: "",
     range,
   });
-  return { grid, truncated };
+  return { grid, truncated, origin: range.s };
 }
 
 function normText(v: unknown): string {
@@ -448,8 +468,33 @@ export interface SheetScan {
   truncated: boolean;
 }
 
+/** セルの実アドレス・数式を求めるための文脈（総売上セルのトレース表示用） */
+interface CellRefContext {
+  ws: XLSX.WorkSheet;
+  /** グリッドの(0,0)に対応するシート上の実座標（safeGridFromSheetのorigin） */
+  origin: { r: number; c: number };
+}
+
+function totalSalesCellRefAt(
+  ctx: CellRefContext | null | undefined,
+  gridRow: number,
+  totalSalesColIdx: number | undefined
+): ExcelCellRef | null {
+  if (!ctx || totalSalesColIdx === undefined) return null;
+  const address = XLSX.utils.encode_cell({
+    r: ctx.origin.r + gridRow,
+    c: ctx.origin.c + totalSalesColIdx,
+  });
+  const cellObj = ctx.ws[address] as { f?: string } | undefined;
+  return { address, formula: cellObj?.f ?? null };
+}
+
 /** ヘッダー検出済みシートからデータ行・除外行を抽出する */
-function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan, "rows" | "excluded" | "dataStartRow" | "dataEndRow"> {
+function extractRows(
+  grid: unknown[][],
+  header: HeaderDetection,
+  cellRefContext?: CellRefContext | null
+): Pick<SheetScan, "rows" | "excluded" | "dataStartRow" | "dataEndRow"> {
   const { headerRowIdx, colIndex } = header;
   const rows: ExcelMonthlyRow[] = [];
   const excluded: ExcludedRow[] = [];
@@ -513,6 +558,7 @@ function extractRows(grid: unknown[][], header: HeaderDetection): Pick<SheetScan
       hourlyWage: hasWageCol ? Math.round(toNum(get(cells, "hourlyWage"))) : null,
       scoutedBy: String(get(cells, "scoutedBy") ?? "").trim(),
       totalSales: Math.round(toNum(get(cells, "totalSales"))),
+      totalSalesCell: totalSalesCellRefAt(cellRefContext, r, colIndex.totalSales),
       payment: Math.round(toNum(get(cells, "payment"))),
       honshimeiCount: to2(toNum(get(cells, "honshimeiCount"))),
       honshimeiGroupCount: to2(toNum(get(cells, "honshimeiGroupCount"))),
@@ -686,7 +732,8 @@ export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
 
 /** 1シートを走査する（ヘッダー判定+データ抽出段階。非同期版から1枚ずつ呼ぶ） */
 export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
-  const { grid, truncated } = safeGridFromSheet(wb.Sheets[name]);
+  const ws = wb.Sheets[name];
+  const { grid, truncated, origin } = safeGridFromSheet(ws);
   const header = detectHeader(grid);
   if (!header) {
     return {
@@ -701,7 +748,7 @@ export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
       truncated,
     };
   }
-  const extracted = extractRows(grid, header);
+  const extracted = extractRows(grid, header, { ws, origin });
   // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
   const score =
     sheetNameScore(name) + header.knownCols * 10 + Math.min(extracted.rows.length, 50);
