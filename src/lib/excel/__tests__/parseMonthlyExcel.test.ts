@@ -102,6 +102,36 @@ describe("parseMonthlyExcel: シート自動判定", () => {
   });
 });
 
+describe("parseMonthlyExcel: 総売上セルの参照情報（照合確認画面のトレース表示・数式キャッシュ検出）", () => {
+  it("通常の数値セルでは、行・列から求めた実際のセル番地を記録し formula は null", () => {
+    const result = parseMonthlyExcel(realFileLikeBuffer());
+    const airi = result.rows.find((r) => r.name === "あいり")!;
+    // payrollSheetRows: 1行目タイトル/2行目空/3行目ヘッダー/4行目あいり。
+    // 総売上は5列目（源氏名,時給,出勤日数,出勤時間,総売上 → E列）
+    expect(airi.totalSalesCell).toEqual({ address: "E4", formula: null });
+  });
+
+  it("総売上セルが数式の場合は数式を検出し、totalSalesは保存時のキャッシュ値をそのまま返す（xlsxは再計算しない）", () => {
+    const XLSXmod = XLSX;
+    const ws = XLSXmod.utils.aoa_to_sheet(payrollSheetRows());
+    // あいり行（Excel上4行目）の総売上セル(E4)を数式に差し替える。
+    // 本来の再計算結果がいくつであっても、ファイルが再計算・保存されていなければ
+    // v（キャッシュ値）は古いままになりうることを模擬する
+    ws["E4"] = { t: "n", v: 1000000, f: "F4+900000" };
+    const wb = XLSXmod.utils.book_new();
+    XLSXmod.utils.book_append_sheet(wb, ws, "給料明細");
+    const buf = XLSXmod.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+
+    const result = parseMonthlyExcel(buf);
+    const airi = result.rows.find((r) => r.name === "あいり")!;
+    expect(airi.totalSalesCell?.address).toBe("E4");
+    expect(airi.totalSalesCell?.formula).toBe("F4+900000");
+    // parseMonthlyExcel（xlsxライブラリ）は数式を再計算しないため、
+    // totalSalesはセルのキャッシュ値（v）をそのまま返す
+    expect(airi.totalSales).toBe(1000000);
+  });
+});
+
 describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
   it("キャスト名だけを検出し、集計・設定項目・数字だけの行は候補に出ない", () => {
     const result = parseMonthlyExcel(realFileLikeBuffer());
