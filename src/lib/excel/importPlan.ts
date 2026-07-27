@@ -8,7 +8,9 @@ import type { RowAction, RowMatch } from "./importMatching";
  * - 要確認行（needsConfirm）の初期状態は action: null（未選択）とし、
  *   自動で「新規キャストとして登録」にしない
  * - 未選択の行が残っている間はインポートを実行できない（summary.unresolved で判定）
- * - 既に同月の成績が存在する行の初期状態は「スキップ」（上書きは明示選択のみ）
+ * - 既に同月の成績が存在する行の初期状態は「上書き」（同一年月の再インポートは
+ *   常に最新の数値で上書き更新する仕様。維持したい場合はユーザーが明示的に
+ *   「既存を維持してスキップ」を選択する）
  */
 
 export interface PlanRowState {
@@ -46,7 +48,12 @@ export function buildInitialRowStates(
   });
 }
 
-/** 紐付け先・アクション変更後に既存成績の有無を再判定する */
+/**
+ * 紐付け先・アクション変更後に既存成績の有無を再判定する。
+ * 既存データがある場合の初期選択は「上書き」— 同一年月のExcelを
+ * 再インポートしたときに数値が更新されないという不具合を防ぐため、
+ * 既定で最新の数値に上書き更新する（維持したい場合は明示的にスキップを選択する）。
+ */
 export function recomputeExisting(
   state: PlanRowState,
   existingCastIds: Set<string>
@@ -55,7 +62,7 @@ export function recomputeExisting(
   const hasExisting = !!cid && existingCastIds.has(cid);
   return {
     ...state,
-    existing: hasExisting ? (state.existing === "none" ? "skip" : state.existing) : "none",
+    existing: hasExisting ? (state.existing === "none" ? "overwrite" : state.existing) : "none",
   };
 }
 
