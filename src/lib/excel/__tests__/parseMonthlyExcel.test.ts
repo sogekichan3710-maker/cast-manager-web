@@ -132,6 +132,43 @@ describe("parseMonthlyExcel: 総売上セルの参照情報（照合確認画面
   });
 });
 
+describe("parseMonthlyExcel: 総売上は「指名売上+場内売上=合計」列を優先する", () => {
+  /**
+   * 運用上、キャスト管理アプリの「総売上」は指名売上と場内売上を合算した
+   * 「合計」列を保存する仕様。しかし「合計」列と紛らわしい「売上」列
+   * （実際には指名売上のみの値）が同じシートに存在する実ファイルがあり、
+   * 従来のエイリアス優先順位ではその「売上」列（指名売上のみ）を誤って
+   * totalSalesとして読み込んでいた。
+   */
+  function payrollWithBreakdownRows(): unknown[][] {
+    return [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "指名売上", "場内", "売上", "合計", "本指名", "同伴", "支給額", "備考"],
+      // 指名売上1,200,000 + 場内売上300,000 = 合計1,500,000。
+      // 「売上」列（1,200,000=指名売上のみ）は紛らわしいが合計とは異なる値にしてある
+      ["あいり", 5000, 20, 100, 1200000, 300000, 1200000, 1500000, 10, 3, 520000, ""],
+      ["ももか", 4500, 18, 85, 800000, 100000, 800000, 900000, 6, 1, 400000, "新人"],
+    ];
+  }
+
+  it("指名売上・場内売上・合計の列がある場合は「合計」がtotalSalesとして保存される（指名売上のみの「売上」列は採用しない）", () => {
+    const buf = makeWorkbook({ 給料明細: payrollWithBreakdownRows() });
+    const result = parseMonthlyExcel(buf);
+    expect(result.headerMap.totalSales).toBe("合計");
+    const airi = result.rows.find((r) => r.name === "あいり")!;
+    const momoka = result.rows.find((r) => r.name === "ももか")!;
+    expect(airi.totalSales).toBe(1500000); // 合計（1,200,000 + 300,000）
+    expect(airi.totalSales).not.toBe(1200000); // 指名売上のみの値は採用しない
+    expect(momoka.totalSales).toBe(900000);
+  });
+
+  it("「合計」列が無い旧フォーマットでは、従来通り「総売上」列がtotalSalesとして保存される", () => {
+    const result = parseMonthlyExcel(realFileLikeBuffer());
+    expect(result.headerMap.totalSales).toBe("総売上");
+    const airi = result.rows.find((r) => r.name === "あいり")!;
+    expect(airi.totalSales).toBe(1500000); // payrollSheetRowsの「総売上」列の値のまま
+  });
+});
+
 describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
   it("キャスト名だけを検出し、集計・設定項目・数字だけの行は候補に出ない", () => {
     const result = parseMonthlyExcel(realFileLikeBuffer());
