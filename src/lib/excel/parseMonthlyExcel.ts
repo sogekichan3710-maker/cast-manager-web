@@ -39,9 +39,22 @@ export interface ExcelMonthlyRow {
   hourlyWage: number | null;
   /** スカウト者（PR6で追加）。列が存在しない場合は空文字 */
   scoutedBy: string;
+  /**
+   * 指名売上（「指名」「指名売上」列。金額）。本指名の**本数**（honshimeiCount）とは
+   * 別概念。列が存在しない場合は0
+   */
+  shimeiSales?: number;
+  /**
+   * 指名売上セルの参照情報（照合確認画面でのトレース表示用）。
+   * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
+   */
+  shimeiSalesCell?: ExcelCellRef | null;
   totalSales: number;
   /**
    * 総売上セルの参照情報（照合確認画面でのトレース表示用）。
+   * 「指名」＋「場内」列の両方が検出できた場合、総売上はその場で合算した値を
+   * 使うため単一セルに由来しない（null）。合算していない場合（旧フォーマット）は
+   * 実際に読み取った「合計」等の列のセルを指す。
    * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
    */
   totalSalesCell?: ExcelCellRef | null;
@@ -49,7 +62,17 @@ export interface ExcelMonthlyRow {
   honshimeiCount: number;
   honshimeiGroupCount: number;
   customerCount: number;
+  /**
+   * 「場内」列の値。旧フォーマットでは場内指名の**本数**、
+   * 「指名」列がある新フォーマットでは場内売上の**金額**として使われる
+   * （店舗ごとのファイル構成の違い。列名だけでは区別できないため、値の意味は
+   * 「指名」列の有無で判断する＝shimeiSalesが検出された行のみ金額として合算する）
+   */
   jounaiCount: number;
+  /**
+   * 場内セルの参照情報（照合確認画面でのトレース表示用）。列が無い場合は null
+   */
+  jounaiCountCell?: ExcelCellRef | null;
   douhan: number;
   workDays: number;
   workHours: number;
@@ -128,7 +151,10 @@ export interface ScoutedByDebugInfo {
  * （源氏名 / 時給 / 出勤数 / 労働時間 / 同伴組 / 本指名 / 場内 / 売上 /
  *   総支給額）を含む。同義列が複数あるシートでは先頭の別名を優先する。
  */
-const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSalesCell">, string[]> = {
+const COLUMN_ALIASES: Record<
+  keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSalesCell" | "shimeiSalesCell" | "jounaiCountCell">,
+  string[]
+> = {
   name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
   hourlyWage: ["時給", "現在時給", "hourlywage", "wage"],
   scoutedBy: [
@@ -144,11 +170,16 @@ const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSal
     "scoutedby",
     "scout",
   ],
-  // 運用上、総売上（totalSales）は「指名売上 + 場内売上 = 合計」で保存する仕様のため、
-  // 「合計」列が存在するシートでは必ずそちらを優先する（先頭優先）。
-  // 「合計」列が無い旧フォーマットのシートのみ、以降の別名（総売上・売上等）へ
-  // フォールバックする。「指名売上」単体の列を totalSales として拾わないよう、
-  // このエイリアス一覧には含めない
+  // 指名売上（金額）。本指名の本数（honshimeiCount＝「本指名」列）とは別の列。
+  // 「本指名」に前方一致してしまわないよう、findColumnは正規化後の完全一致で
+  // 判定するため「指名」だけの列とは衝突しない
+  shimeiSales: ["指名売上", "指名"],
+  // 総売上（totalSales）は原則「指名」＋「場内」列の実値をこのファイル内で
+  // 合算して求める（下記extractRowsのcomputeTotalFromBreakdown）。
+  // Excel側の「合計」セルの値をそのまま信用しない（列の取り違え・数式の
+  // 再計算前キャッシュ値などにより、指名+場内の実値と一致しないことがあるため）。
+  // 「指名」列が存在しない旧フォーマットのシートのみ、ここでの別名検索結果
+  // （「合計」優先）をtotalSalesとして採用するフォールバックに使う
   totalSales: ["合計", "総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
   // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
   // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
@@ -156,7 +187,9 @@ const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSal
   honshimeiCount: ["本指名", "本指名本数", "本指名数", "honshimei"],
   honshimeiGroupCount: ["本指名組数", "本指名組", "本指名(組)", "hongroup"],
   customerCount: ["顧客数", "客数", "customers"],
-  jounaiCount: ["場内", "場内指名", "jounai"],
+  // 「場内」列は旧フォーマットでは場内指名の本数、shimeiSales（「指名」列）が
+  // 存在する新フォーマットでは場内売上の金額として使われる（実ファイルの構成差）
+  jounaiCount: ["場内売上", "場内", "場内指名", "jounai"],
   douhan: ["同伴", "同伴組", "同伴数", "douhan"],
   workDays: ["出勤日数", "出勤数", "出勤", "workdays"],
   workHours: ["出勤時間", "労働時間", "勤務時間", "労時間", "workhours"],
@@ -170,6 +203,7 @@ const COLUMN_ALIASES: Record<keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSal
  */
 const HEADER_SIGNAL_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
   "hourlyWage",
+  "shimeiSales",
   "totalSales",
   "payment",
   "honshimeiCount",
@@ -261,6 +295,7 @@ const FIELD_JA_LABELS: Record<keyof typeof COLUMN_ALIASES, string> = {
   name: "名前",
   hourlyWage: "時給",
   scoutedBy: "スカウト者",
+  shimeiSales: "指名",
   totalSales: "売上",
   payment: "支給額",
   honshimeiCount: "本指名",
@@ -277,6 +312,7 @@ const FIELD_JA_LABELS: Record<keyof typeof COLUMN_ALIASES, string> = {
 /** 数式エラー検出の対象とする数値系フィールド（名前・スカウト者・備考は対象外） */
 const NUMERIC_FIELDS: ReadonlyArray<keyof typeof COLUMN_ALIASES> = [
   "hourlyWage",
+  "shimeiSales",
   "totalSales",
   "payment",
   "honshimeiCount",
@@ -480,19 +516,26 @@ interface CellRefContext {
   origin: { r: number; c: number };
 }
 
-function totalSalesCellRefAt(
+function cellRefAt(
   ctx: CellRefContext | null | undefined,
   gridRow: number,
-  totalSalesColIdx: number | undefined
+  colIdx: number | undefined
 ): ExcelCellRef | null {
-  if (!ctx || totalSalesColIdx === undefined) return null;
+  if (!ctx || colIdx === undefined) return null;
   const address = XLSX.utils.encode_cell({
     r: ctx.origin.r + gridRow,
-    c: ctx.origin.c + totalSalesColIdx,
+    c: ctx.origin.c + colIdx,
   });
   const cellObj = ctx.ws[address] as { f?: string } | undefined;
   return { address, formula: cellObj?.f ?? null };
 }
+
+/**
+ * デバッグログ出力の可否（本番・プレビューではConsoleを汚さないよう抑止する）。
+ * 既存の追跡ログ（excelImportService.ts の [excelImport:monthlyResults]）と同じ基準
+ */
+const DEBUG_LOG_ENABLED =
+  typeof process !== "undefined" && process.env.NODE_ENV !== "production";
 
 /** ヘッダー検出済みシートからデータ行・除外行を抽出する */
 function extractRows(
@@ -557,18 +600,39 @@ function extractRows(
     }
 
     consecutiveInvalid = 0;
+
+    // 指名（shimeiSales）・場内（jounaiCount）は、金額として合算できる場合のみ
+    // 「合計」列の値ではなくこの場で合算した値をtotalSalesとして採用する
+    // （Excel側の「合計」セルは列の取り違え・数式の再計算前キャッシュ値などにより
+    //  指名+場内の実値と一致しないことがあるため、信用しない）。
+    // 「指名」列が無い旧フォーマットのシートでは、従来通り「合計」等の別名で
+    // 検出したtotalSales列をそのまま使う
+    const hasShimeiCol = colIndex.shimeiSales !== undefined;
+    const hasJounaiCol = colIndex.jounaiCount !== undefined;
+    const computeTotalFromBreakdown = hasShimeiCol && hasJounaiCol;
+    const shimeiSalesRaw = toNum(get(cells, "shimeiSales"));
+    const jounaiRaw = toNum(get(cells, "jounaiCount"));
+    const totalSalesValue = computeTotalFromBreakdown
+      ? Math.round(shimeiSalesRaw + jounaiRaw)
+      : Math.round(toNum(get(cells, "totalSales")));
+
     rows.push({
       rowNumber,
       name: rawName,
       hourlyWage: hasWageCol ? Math.round(toNum(get(cells, "hourlyWage"))) : null,
       scoutedBy: String(get(cells, "scoutedBy") ?? "").trim(),
-      totalSales: Math.round(toNum(get(cells, "totalSales"))),
-      totalSalesCell: totalSalesCellRefAt(cellRefContext, r, colIndex.totalSales),
+      shimeiSales: hasShimeiCol ? Math.round(shimeiSalesRaw) : 0,
+      shimeiSalesCell: cellRefAt(cellRefContext, r, colIndex.shimeiSales),
+      totalSales: totalSalesValue,
+      totalSalesCell: computeTotalFromBreakdown
+        ? null
+        : cellRefAt(cellRefContext, r, colIndex.totalSales),
       payment: Math.round(toNum(get(cells, "payment"))),
       honshimeiCount: to2(toNum(get(cells, "honshimeiCount"))),
       honshimeiGroupCount: to2(toNum(get(cells, "honshimeiGroupCount"))),
       customerCount: to2(toNum(get(cells, "customerCount"))),
-      jounaiCount: to2(toNum(get(cells, "jounaiCount"))),
+      jounaiCount: to2(jounaiRaw),
+      jounaiCountCell: cellRefAt(cellRefContext, r, colIndex.jounaiCount),
       douhan: to2(toNum(get(cells, "douhan"))),
       workDays: to2(toNum(get(cells, "workDays"))),
       workHours: to2(toNum(get(cells, "workHours"))),
@@ -905,6 +969,30 @@ export function assembleParseResult(
         sample: [],
         reason: `採用シート「${adopted.name}」および他のどのシートにも、名前列とスカウト者/情報提供者列の組み合わせを検出できませんでした。`,
       };
+    }
+  }
+
+  // 【デバッグログ・段階1: Excel読み込み】採用シート（実際にインポートに使う
+  // シート）の行ごとに、指名・場内の実値と、そこから求めたtotalSalesを出力する。
+  // どのシートを走査するかで金額が変わっていないかを追跡できるよう、採用シート
+  // 確定後のこの1箇所からのみ出力する（scanSheetの走査段階では出力しない）。
+  // 本番・プレビューではConsoleを汚さないよう抑止する
+  if (DEBUG_LOG_ENABLED) {
+    for (const r of rows) {
+      // eslint-disable-next-line no-console
+      console.info("[parseMonthlyExcel:row]", {
+        sheetName: adopted.name,
+        rowNumber: r.rowNumber,
+        name: r.name,
+        shimeiSales: headerMap.shimeiSales ? r.shimeiSales : null,
+        shimeiSalesColumnLabel: headerMap.shimeiSales ?? null,
+        jounaiCount: headerMap.jounaiCount ? r.jounaiCount : null,
+        jounaiCountColumnLabel: headerMap.jounaiCount ?? null,
+        totalSalesSource:
+          headerMap.shimeiSales && headerMap.jounaiCount ? "指名+場内の合算" : "Excel列（合計/総売上等）",
+        totalSalesColumnLabel: headerMap.totalSales ?? null,
+        totalSales: r.totalSales,
+      });
     }
   }
 

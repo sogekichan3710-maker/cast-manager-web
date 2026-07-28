@@ -1102,8 +1102,16 @@ function RowCard({
         {" ／ "}
         列「{totalSalesColumnLabel || "―"}」
         {" ／ "}
-        セル{row.totalSalesCell?.address ?? "―"}
+        セル{row.totalSalesCell?.address ?? (row.shimeiSales ? "指名+場内の合算" : "―")}
       </div>
+      {!!row.shimeiSales && (
+        <div className="page-sub" style={{ marginTop: -4, marginBottom: 6 }}>
+          内訳: 指名 ¥{row.shimeiSales.toLocaleString()}（セル{row.shimeiSalesCell?.address ?? "―"}）
+          {" + "}
+          場内 ¥{row.jounaiCount.toLocaleString()}（セル{row.jounaiCountCell?.address ?? "―"}）
+          {" = "}¥{(row.shimeiSales + row.jounaiCount).toLocaleString()}
+        </div>
+      )}
       {row.totalSalesCell?.formula && (
         <div className="candidate" style={{ color: "var(--acc2)" }}>
           ⚠ 総売上セル（{row.totalSalesCell.address}）は数式です（=

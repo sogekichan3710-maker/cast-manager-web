@@ -25,6 +25,7 @@ const FIELDS: Array<{
   yen: boolean;
 }> = [
   { key: "totalSales", label: "売上", yen: true },
+  { key: "shimeiSales", label: "指名", yen: true },
   { key: "payment", label: "支給額", yen: true },
   { key: "honshimeiCount", label: "本指名", yen: false },
   { key: "honshimeiGroupCount", label: "本指名組数", yen: false },
@@ -40,6 +41,7 @@ const FIELDS: Array<{
 type ExcelMonthlyRowNumeric = Pick<
   ExcelMonthlyRow,
   | "totalSales"
+  | "shimeiSales"
   | "payment"
   | "honshimeiCount"
   | "honshimeiGroupCount"

@@ -92,6 +92,7 @@ function emptyResultFor(cast: Pick<CastWithId, "id" | "storeId">): MonthlyResult
     storeId: cast.storeId,
     month: "",
     totalSales: 0,
+    shimeiSales: 0,
     payment: 0,
     honshimeiCount: 0,
     honshimeiGroupCount: 0,
@@ -142,6 +143,10 @@ export function isRankingEligible(
  *   0（実績なし）は降順ソートの結果として自然に末尾へ並ぶ
  * - 全件返す（PR6: 従来のTOP15打ち切りを廃止。UI側でスクロール表示する）
  */
+/** デバッグログ出力の可否（本番・プレビューではConsoleを汚さないよう抑止する） */
+const DEBUG_LOG_ENABLED =
+  typeof process !== "undefined" && process.env.NODE_ENV !== "production";
+
 export function buildRanking(
   results: MonthlyResultWithId[],
   cat: RankCat,
@@ -151,17 +156,50 @@ export function buildRanking(
   const eligibleCasts = activeCasts.filter((c) => isRankingEligible(c.rankingEligibleFrom, periodEnd));
   const validCastIds = new Set(eligibleCasts.map((c) => c.id));
   const dedup = new Map<string, MonthlyResultWithId>();
+  // 同一castIdに対して複数のmonthlyResultsレコードが対象に入ってきた場合
+  // （店舗を跨ぐ孤立レコードの混入等）に備え、dedup前の候補をデバッグ用に記録する
+  const candidatesByCastId = new Map<string, MonthlyResultWithId[]>();
   results.forEach((r) => {
     if (!r.castId) return;
     if (!validCastIds.has(r.castId)) return; // 対象外（他店舗・休職・退店・アーカイブ・対象期間外等）の孤立レコード除去
+    if (DEBUG_LOG_ENABLED && cat.id === "sales") {
+      const list = candidatesByCastId.get(r.castId) ?? [];
+      list.push(r);
+      candidatesByCastId.set(r.castId, list);
+    }
     const e = dedup.get(r.castId);
     if (!e || (r.id || "") > (e.id || "")) dedup.set(r.castId, r);
   });
-  return eligibleCasts
+  const ranked = eligibleCasts
     .map((c) => dedup.get(c.id) ?? emptyResultFor(c))
     .sort((a, b) => {
       const d = cat.key(b) - cat.key(a);
       if (d !== 0) return d;
       return a.castId.localeCompare(b.castId); // 同値時の安定順
     });
+
+  // 【デバッグログ・段階3: ランキング計算】「🏆売上」カテゴリで実際に表示・
+  // ソートに使われた値（=Firestoreのr.totalSales）をキャストごとに出力する。
+  // 同一castIdに複数レコードが混入していた場合は候補も併記し、dedupが
+  // どのレコードを採用したかを追跡できるようにする
+  if (DEBUG_LOG_ENABLED && cat.id === "sales") {
+    for (const r of ranked) {
+      const candidates = candidatesByCastId.get(r.castId) ?? [];
+      // eslint-disable-next-line no-console
+      console.info("[ranking:sales]", {
+        castId: r.castId,
+        usedRecordId: r.id,
+        month: r.month,
+        storeId: r.storeId,
+        shimeiSales: r.shimeiSales ?? null,
+        jounaiCount: r.jounaiCount ?? null,
+        totalSales: r.totalSales,
+        rankingUsedSales: cat.key(r),
+        candidateRecordIds: candidates.map((c) => c.id),
+        candidateCount: candidates.length,
+      });
+    }
+  }
+
+  return ranked;
 }
