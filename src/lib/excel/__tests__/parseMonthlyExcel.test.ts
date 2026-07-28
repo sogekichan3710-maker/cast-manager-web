@@ -169,42 +169,74 @@ describe("parseMonthlyExcel: 総売上は「指名売上+場内売上=合計」�
   });
 });
 
-describe("parseMonthlyExcel: 総売上は「合計」セルの値を信用せず「指名」+「場内」を実際に合算する", () => {
+describe("parseMonthlyExcel: totalSalesは必ず「キャスト実績」シートの「合計」列を使用する", () => {
   /**
-   * 報告された不具合の再現: 「合計」列の優先読み込み（上のdescribe参照）だけでは、
-   * 「合計」セル自体の値が指名+場内の実値と一致しない場合（列の取り違え・
-   * 数式の再計算前キャッシュ値・シート構成の違い等）に売上が大きく狂う。
-   * 「キャスト月報実績」シートの実際の見出しは「指名売上」ではなく「指名」の
-   * 場合があるため、そのケースも合わせて検証する。
-   * 例: せいか 指名5,818,200 + 場内売上75,400 = 5,893,600 のはずが、
-   *     ランキングには全く無関係な515,843円が表示された、という報告に対応。
+   * 報告された不具合の再現: ワークブックに「一覧」シートと「キャスト実績」シートの
+   * 両方があり、どちらにも「合計」列が存在する（それぞれ意味・値が異なる）実ファイルで、
+   * 自動判定（スコアリング）が「一覧」シートを誤って採用し、その「合計」列（本件と
+   * 無関係な515,843円）がtotalSalesとして保存されていた。
+   * 売上ランキング・キャスト詳細・Firestore保存は必ず「キャスト実績」シートの
+   * 「売上・指名・場内売上・合計」の「合計」を参照する仕様のため、同名の紛らわしい
+   * シートが他にあっても「キャスト実績」シートを最優先で採用することを検証する。
+   * 例: せいか 指名5,818,200 + 場内売上75,400 = 合計5,893,600（キャスト実績シート）
+   *     ／ 一覧シートの「合計」列は515,843円という無関係な値。
    */
-  function monthlyResultRowsWithWrongTotal(): unknown[][] {
+  function ichiranRowsWithUnrelatedTotal(): unknown[][] {
     return [
-      ["源氏名", "時給", "出勤日数", "出勤時間", "指名", "場内", "合計", "本指名", "同伴", "支給額", "備考"],
-      // 「合計」セル自体は515,843という指名+場内と無関係な値になっている
-      // （列の取り違え・数式キャッシュの古さ等、実ファイル側の要因を想定）
-      ["せいか", 5000, 22, 110, 5818200, 75400, 515843, 12, 4, 900000, ""],
+      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "合計", "支給額", "備考"],
+      // 「一覧」シートの「合計」は「キャスト実績」シートとは無関係な集計（例: 別基準の合計）
+      ["せいか", 5000, 22, 110, 12, 4, 515843, 900000, ""],
     ];
   }
 
-  it("「合計」セルの値が指名+場内と異なっていても、totalSalesは指名+場内の実値を合算した値になる", () => {
-    const buf = makeWorkbook({ 給料明細: monthlyResultRowsWithWrongTotal() });
+  function castJissekiRows(): unknown[][] {
+    return [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "売上", "指名", "場内売上", "合計", "本指名", "支給額", "備考"],
+      // 「売上」列（指名のみの値で紛らわしい）と「合計」列（指名+場内の正しい値）の両方がある
+      ["せいか", 5000, 22, 110, 5818200, 5818200, 75400, 5893600, 12, 900000, ""],
+    ];
+  }
+
+  it("「一覧」シートに紛らわしい「合計」列があっても、「キャスト実績」シートが優先採用される", () => {
+    const buf = makeWorkbook({
+      一覧: ichiranRowsWithUnrelatedTotal(),
+      キャスト実績: castJissekiRows(),
+    });
     const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("キャスト実績");
     const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSales).toBe(5893600); // キャスト実績シートの「合計」列
+    expect(seika.totalSales).not.toBe(515843); // 一覧シートの「合計」列は使用しない
     expect(seika.shimeiSales).toBe(5818200);
     expect(seika.jounaiCount).toBe(75400);
-    expect(seika.totalSales).toBe(5893600); // 指名5,818,200 + 場内75,400
-    expect(seika.totalSales).not.toBe(515843); // Excelの「合計」セルの誤った値は採用しない
+    expect(seika.totalSalesCell?.address).toBeTruthy(); // 「合計」列の実セルに由来する
   });
 
-  it("指名+場内から合算した場合、totalSalesCellは単一セルに由来しないためnullになる", () => {
-    const buf = makeWorkbook({ 給料明細: monthlyResultRowsWithWrongTotal() });
+  it("シート名の並び順（一覧が先）に関わらず「キャスト実績」シートが優先採用される", () => {
+    const buf = makeWorkbook({
+      キャスト実績: castJissekiRows(),
+      一覧: ichiranRowsWithUnrelatedTotal(),
+    });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("キャスト実績");
+  });
+
+  it("「キャスト実績」シートが無い場合は従来通りスコアの高いシートが採用される（後方互換）", () => {
+    const result = parseMonthlyExcel(realFileLikeBuffer());
+    expect(result.sheetName).toBe("給料明細");
+  });
+
+  it("指名+場内の合算値が「合計」列と一致しない場合はtotalSalesBreakdownMismatchがtrueになる（値そのものは上書きしない）", () => {
+    const buf = makeWorkbook({
+      キャスト実績: [
+        ["源氏名", "時給", "出勤日数", "出勤時間", "指名", "場内", "合計", "支給額", "備考"],
+        ["せいか", 5000, 22, 110, 5818200, 75400, 515843, 900000, ""], // 合計が指名+場内と食い違う異常データ
+      ],
+    });
     const result = parseMonthlyExcel(buf);
     const seika = result.rows.find((r) => r.name === "せいか")!;
-    expect(seika.totalSalesCell).toBeNull();
-    expect(seika.shimeiSalesCell?.address).toBeTruthy();
-    expect(seika.jounaiCountCell?.address).toBeTruthy();
+    expect(seika.totalSales).toBe(515843); // 「合計」列の実値をそのまま採用（上書きしない）
+    expect(seika.totalSalesBreakdownMismatch).toBe(true);
   });
 });
 

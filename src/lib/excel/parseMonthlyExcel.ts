@@ -49,15 +49,22 @@ export interface ExcelMonthlyRow {
    * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
    */
   shimeiSalesCell?: ExcelCellRef | null;
+  /**
+   * 総売上。常に採用シートの「合計」列（無ければ「総売上」等の別名へ
+   * フォールバック。COLUMN_ALIASESのtotalSales参照）の実値をそのまま使う
+   * （指名+場内をこの場で計算して上書きすることはしない）
+   */
   totalSales: number;
   /**
    * 総売上セルの参照情報（照合確認画面でのトレース表示用）。
-   * 「指名」＋「場内」列の両方が検出できた場合、総売上はその場で合算した値を
-   * 使うため単一セルに由来しない（null）。合算していない場合（旧フォーマット）は
-   * 実際に読み取った「合計」等の列のセルを指す。
    * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
    */
   totalSalesCell?: ExcelCellRef | null;
+  /**
+   * 指名+場内の合算値が「合計」列の値と一致しない場合にtrue（デバッグ・警告表示用。
+   * totalSales自体はこのフラグに関わらず常に「合計」列の実値のまま）
+   */
+  totalSalesBreakdownMismatch?: boolean;
   payment: number;
   honshimeiCount: number;
   honshimeiGroupCount: number;
@@ -152,7 +159,10 @@ export interface ScoutedByDebugInfo {
  *   総支給額）を含む。同義列が複数あるシートでは先頭の別名を優先する。
  */
 const COLUMN_ALIASES: Record<
-  keyof Omit<ExcelMonthlyRow, "rowNumber" | "totalSalesCell" | "shimeiSalesCell" | "jounaiCountCell">,
+  keyof Omit<
+    ExcelMonthlyRow,
+    "rowNumber" | "totalSalesCell" | "totalSalesBreakdownMismatch" | "shimeiSalesCell" | "jounaiCountCell"
+  >,
   string[]
 > = {
   name: ["源氏名", "キャスト名", "名前", "キャスト", "氏名", "name"],
@@ -174,12 +184,16 @@ const COLUMN_ALIASES: Record<
   // 「本指名」に前方一致してしまわないよう、findColumnは正規化後の完全一致で
   // 判定するため「指名」だけの列とは衝突しない
   shimeiSales: ["指名売上", "指名"],
-  // 総売上（totalSales）は原則「指名」＋「場内」列の実値をこのファイル内で
-  // 合算して求める（下記extractRowsのcomputeTotalFromBreakdown）。
-  // Excel側の「合計」セルの値をそのまま信用しない（列の取り違え・数式の
-  // 再計算前キャッシュ値などにより、指名+場内の実値と一致しないことがあるため）。
-  // 「指名」列が存在しない旧フォーマットのシートのみ、ここでの別名検索結果
-  // （「合計」優先）をtotalSalesとして採用するフォールバックに使う
+  // 総売上（totalSales）は運用上「指名+場内=合計」で保存する仕様のため、
+  // 「合計」列が存在するシートでは必ずそちらを優先する（先頭優先）。
+  // 「合計」列が無い旧フォーマットのシートのみ、以降の別名（総売上・売上等）へ
+  // フォールバックする。「指名」単体の列を誤ってtotalSalesとして拾わないよう、
+  // このエイリアス一覧には含めない（shimeiSales側のみに含める）。
+  // どの「合計」列を読むかはシート選択で担保する。「指名」「場内」「合計」の
+  // 3列すべてが揃うシート（実店舗では「キャスト実績」シート）を優先的に
+  // 採用する（下記assembleParseResultのhasFullSalesBreakdownによる絞り込み参照）。
+  // 同じワークブックに「一覧」等の紛らわしい「合計」列を持つ別シートが
+  // あっても、3列が揃っていなければ優先採用の対象にならない
   totalSales: ["合計", "総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
   // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
   // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
@@ -601,20 +615,20 @@ function extractRows(
 
     consecutiveInvalid = 0;
 
-    // 指名（shimeiSales）・場内（jounaiCount）は、金額として合算できる場合のみ
-    // 「合計」列の値ではなくこの場で合算した値をtotalSalesとして採用する
-    // （Excel側の「合計」セルは列の取り違え・数式の再計算前キャッシュ値などにより
-    //  指名+場内の実値と一致しないことがあるため、信用しない）。
-    // 「指名」列が無い旧フォーマットのシートでは、従来通り「合計」等の別名で
-    // 検出したtotalSales列をそのまま使う
+    // totalSalesは常に採用シートの「合計」列（無ければ「総売上」等へフォールバック。
+    // COLUMN_ALIASESのtotalSales参照）の値をそのまま使う。指名（shimeiSales）・
+    // 場内（jounaiCount）は内訳の参考値として保持するが、totalSalesを上書き計算
+    // することはしない（採用シートを取り違えない限り、「合計」列＝指名+場内の
+    // 実値のはずであり、Excel側の「合計」セルの方を信用する）
     const hasShimeiCol = colIndex.shimeiSales !== undefined;
     const hasJounaiCol = colIndex.jounaiCount !== undefined;
-    const computeTotalFromBreakdown = hasShimeiCol && hasJounaiCol;
     const shimeiSalesRaw = toNum(get(cells, "shimeiSales"));
     const jounaiRaw = toNum(get(cells, "jounaiCount"));
-    const totalSalesValue = computeTotalFromBreakdown
-      ? Math.round(shimeiSalesRaw + jounaiRaw)
-      : Math.round(toNum(get(cells, "totalSales")));
+    const totalSalesValue = Math.round(toNum(get(cells, "totalSales")));
+    // 指名+場内の合算が「合計」列の値と食い違う場合の検知用（デバッグログでのみ使用。
+    // 値そのものの上書きはしない）
+    const breakdownMismatch =
+      hasShimeiCol && hasJounaiCol && Math.round(shimeiSalesRaw + jounaiRaw) !== totalSalesValue;
 
     rows.push({
       rowNumber,
@@ -624,9 +638,8 @@ function extractRows(
       shimeiSales: hasShimeiCol ? Math.round(shimeiSalesRaw) : 0,
       shimeiSalesCell: cellRefAt(cellRefContext, r, colIndex.shimeiSales),
       totalSales: totalSalesValue,
-      totalSalesCell: computeTotalFromBreakdown
-        ? null
-        : cellRefAt(cellRefContext, r, colIndex.totalSales),
+      totalSalesCell: cellRefAt(cellRefContext, r, colIndex.totalSales),
+      totalSalesBreakdownMismatch: breakdownMismatch,
       payment: Math.round(toNum(get(cells, "payment"))),
       honshimeiCount: to2(toNum(get(cells, "honshimeiCount"))),
       honshimeiGroupCount: to2(toNum(get(cells, "honshimeiGroupCount"))),
@@ -784,6 +797,21 @@ function sheetNameScore(name: string): number {
   return score;
 }
 
+/**
+ * 「売上・指名・場内売上・合計」の内訳3列（指名＝shimeiSales・場内＝jounaiCount・
+ * 合計＝totalSales）がすべて検出できているシートか。実店舗のファイルには
+ * 同じワークブック内に紛らわしい「合計」列を持つ別シート（「一覧」等）が
+ * 存在することがあり、シート名やスコアだけでは正しいシートを選べない。
+ * 3列すべてが揃うシートは「キャスト実績」相当の売上明細シートである可能性が
+ * 高いため、シート選択で最優先する（assembleParseResult参照）
+ */
+function hasFullSalesBreakdown(scan: SheetScan): boolean {
+  const idx = scan.header?.colIndex;
+  return (
+    !!idx && idx.totalSales !== undefined && idx.shimeiSales !== undefined && idx.jounaiCount !== undefined
+  );
+}
+
 /** Excelバイナリをワークブックとして読み込む（シート解析段階） */
 export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
   let wb: XLSX.WorkBook;
@@ -833,13 +861,19 @@ export function assembleParseResult(
 ): ExcelParseResult {
   // ---- 採用シートの決定 ----
   let adopted: SheetScan | undefined;
+  let preferredFullBreakdownExcluded = false;
   if (opts?.sheetName) {
     adopted = scans.find((s) => s.name === opts.sheetName);
     if (!adopted) throw new Error(`シート「${opts.sheetName}」が見つかりません`);
   } else {
-    adopted = scans
-      .filter((s) => s.header !== null && s.rows.length > 0)
-      .sort((a, b) => b.score - a.score)[0];
+    const eligible = scans.filter((s) => s.header !== null && s.rows.length > 0);
+    // 「指名・場内・合計」の3列すべてが揃うシートがあれば最優先で候補を絞り込む
+    // （紛らわしい「合計」列だけを持つ別シートを誤って採用しないため）。
+    // 無ければ従来通り全候補からスコアの高い順に選ぶ
+    const fullBreakdown = eligible.filter(hasFullSalesBreakdown);
+    const pool = fullBreakdown.length > 0 ? fullBreakdown : eligible;
+    preferredFullBreakdownExcluded = fullBreakdown.length > 0;
+    adopted = pool.slice().sort((a, b) => b.score - a.score)[0];
     if (!adopted) {
       // ヘッダー+データを検出できたシートが1つも無い
       const sheetList = sheetNames.join(" / ");
@@ -867,7 +901,9 @@ export function assembleParseResult(
           ? "ヘッダー行を検出できないため除外（設定・集計シートの可能性）"
           : s.rows.length === 0
             ? "有効なキャスト行が無いため除外"
-            : "採用シートよりスコアが低いため除外") +
+            : preferredFullBreakdownExcluded && !hasFullSalesBreakdown(s)
+              ? "「指名・場内・合計」の3列が揃う他のシートが優先採用されたため除外"
+              : "採用シートよりスコアが低いため除外") +
       (s.truncated
         ? `（データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えるため一部のみ読み込み）`
         : ""),
@@ -903,6 +939,26 @@ export function assembleParseResult(
     warnings.push(
       `${errorSkippedCount}件の行が数式エラー（#REF!等）のため読み込めませんでした。除外行の詳細をご確認ください。`
     );
+  }
+  // 売上ランキング等のtotalSalesは「指名・場内・合計」の3列が揃うシート
+  // （実店舗では「キャスト実績」シート）を優先採用する。それらの列が揃う
+  // シートが他に存在するのにヘッダー未検出・有効行0件等で採用できなかった
+  // 場合は、紛らわしい「合計」列だけの別シートが採用されている恐れがあるため
+  // 強く警告する
+  if (!hasFullSalesBreakdown(adopted)) {
+    // ヘッダーは検出できたが有効なキャスト行が0件だったため候補から漏れたケースのみ
+    // 検出できる（ヘッダー自体を検出できなかったシートは列構成を判定できないため対象外）
+    const unusablePreferred = scans.find(
+      (s) => s !== adopted && s.header !== null && s.rows.length === 0 && hasFullSalesBreakdown(s)
+    );
+    if (unusablePreferred) {
+      warnings.push(
+        `「指名・場内・合計」の列が揃うシート「${unusablePreferred.name}」がありますが、` +
+          `有効なキャスト行が無いため採用できませんでした。代わりに採用された「${adopted.name}」シートの` +
+          `「合計」列は指名+場内とは無関係な可能性があるため、そのままランキング等に使用しないでください。` +
+          `シート構成をご確認ください。`
+      );
+    }
   }
 
   const headerCells = (adopted.grid[adopted.header.headerRowIdx] ?? []).map((v) => String(v ?? ""));
@@ -972,26 +1028,32 @@ export function assembleParseResult(
     }
   }
 
-  // 【デバッグログ・段階1: Excel読み込み】採用シート（実際にインポートに使う
-  // シート）の行ごとに、指名・場内の実値と、そこから求めたtotalSalesを出力する。
-  // どのシートを走査するかで金額が変わっていないかを追跡できるよう、採用シート
-  // 確定後のこの1箇所からのみ出力する（scanSheetの走査段階では出力しない）。
+  // 【デバッグログ・段階1: Excel読み込み】採用シート名・セル位置・取得値を
+  // 行ごとに出力する。totalSalesは常に採用シートの「合計」列（headerMap.totalSales）
+  // の実値そのものであり、指名・場内はあくまで内訳の参考値（このログでのみ突合に使う）。
+  // どのシートのどのセルから読んでいるかを追跡できるよう、採用シート確定後の
+  // この1箇所からのみ出力する（scanSheetの走査段階では出力しない）。
   // 本番・プレビューではConsoleを汚さないよう抑止する
   if (DEBUG_LOG_ENABLED) {
     for (const r of rows) {
       // eslint-disable-next-line no-console
       console.info("[parseMonthlyExcel:row]", {
         sheetName: adopted.name,
+        // 「指名・場内・合計」の3列が揃うシートとして優先採用されたか
+        // （揃わない場合は従来通りスコア最大のシートが採用されている）
+        hasFullSalesBreakdownColumns: hasFullSalesBreakdown(adopted),
         rowNumber: r.rowNumber,
         name: r.name,
         shimeiSales: headerMap.shimeiSales ? r.shimeiSales : null,
         shimeiSalesColumnLabel: headerMap.shimeiSales ?? null,
+        shimeiSalesCell: r.shimeiSalesCell?.address ?? null,
         jounaiCount: headerMap.jounaiCount ? r.jounaiCount : null,
         jounaiCountColumnLabel: headerMap.jounaiCount ?? null,
-        totalSalesSource:
-          headerMap.shimeiSales && headerMap.jounaiCount ? "指名+場内の合算" : "Excel列（合計/総売上等）",
+        jounaiCountCell: r.jounaiCountCell?.address ?? null,
         totalSalesColumnLabel: headerMap.totalSales ?? null,
+        totalSalesCell: r.totalSalesCell?.address ?? null,
         totalSales: r.totalSales,
+        breakdownMismatch: r.totalSalesBreakdownMismatch ?? false,
       });
     }
   }
