@@ -169,6 +169,45 @@ describe("parseMonthlyExcel: 総売上は「指名売上+場内売上=合計」�
   });
 });
 
+describe("parseMonthlyExcel: 総売上は「合計」セルの値を信用せず「指名」+「場内」を実際に合算する", () => {
+  /**
+   * 報告された不具合の再現: 「合計」列の優先読み込み（上のdescribe参照）だけでは、
+   * 「合計」セル自体の値が指名+場内の実値と一致しない場合（列の取り違え・
+   * 数式の再計算前キャッシュ値・シート構成の違い等）に売上が大きく狂う。
+   * 「キャスト月報実績」シートの実際の見出しは「指名売上」ではなく「指名」の
+   * 場合があるため、そのケースも合わせて検証する。
+   * 例: せいか 指名5,818,200 + 場内売上75,400 = 5,893,600 のはずが、
+   *     ランキングには全く無関係な515,843円が表示された、という報告に対応。
+   */
+  function monthlyResultRowsWithWrongTotal(): unknown[][] {
+    return [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "指名", "場内", "合計", "本指名", "同伴", "支給額", "備考"],
+      // 「合計」セル自体は515,843という指名+場内と無関係な値になっている
+      // （列の取り違え・数式キャッシュの古さ等、実ファイル側の要因を想定）
+      ["せいか", 5000, 22, 110, 5818200, 75400, 515843, 12, 4, 900000, ""],
+    ];
+  }
+
+  it("「合計」セルの値が指名+場内と異なっていても、totalSalesは指名+場内の実値を合算した値になる", () => {
+    const buf = makeWorkbook({ 給料明細: monthlyResultRowsWithWrongTotal() });
+    const result = parseMonthlyExcel(buf);
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.shimeiSales).toBe(5818200);
+    expect(seika.jounaiCount).toBe(75400);
+    expect(seika.totalSales).toBe(5893600); // 指名5,818,200 + 場内75,400
+    expect(seika.totalSales).not.toBe(515843); // Excelの「合計」セルの誤った値は採用しない
+  });
+
+  it("指名+場内から合算した場合、totalSalesCellは単一セルに由来しないためnullになる", () => {
+    const buf = makeWorkbook({ 給料明細: monthlyResultRowsWithWrongTotal() });
+    const result = parseMonthlyExcel(buf);
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSalesCell).toBeNull();
+    expect(seika.shimeiSalesCell?.address).toBeTruthy();
+    expect(seika.jounaiCountCell?.address).toBeTruthy();
+  });
+});
+
 describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
   it("キャスト名だけを検出し、集計・設定項目・数字だけの行は候補に出ない", () => {
     const result = parseMonthlyExcel(realFileLikeBuffer());

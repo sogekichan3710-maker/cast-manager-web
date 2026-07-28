@@ -105,6 +105,7 @@ export function finalizeCancelledStatus(savedChanges: number): RunStatus {
 export function mrRowBusinessFields(row: ExcelMonthlyRow): Record<string, unknown> {
   return {
     totalSales: Math.round(row.totalSales),
+    shimeiSales: Math.round(row.shimeiSales ?? 0),
     payment: Math.round(row.payment),
     honshimeiCount: row.honshimeiCount,
     honshimeiGroupCount: row.honshimeiGroupCount,
@@ -122,6 +123,7 @@ export function mrRowBusinessFields(row: ExcelMonthlyRow): Record<string, unknow
 function mrBusinessFields(cur: MonthlyResultDoc): Record<string, unknown> {
   return {
     totalSales: cur.totalSales,
+    shimeiSales: cur.shimeiSales ?? 0,
     payment: cur.payment,
     honshimeiCount: cur.honshimeiCount,
     honshimeiGroupCount: cur.honshimeiGroupCount,
@@ -158,6 +160,7 @@ function mrDataFromRow(
     storeId,
     month,
     totalSales: Math.round(row.totalSales),
+    shimeiSales: Math.round(row.shimeiSales ?? 0),
     payment: Math.round(row.payment),
     honshimeiCount: row.honshimeiCount,
     honshimeiGroupCount: row.honshimeiGroupCount,
@@ -404,7 +407,12 @@ export async function executeExcelImport(
           const data = mrDataFromRow(storeId, castId!, targetMonth, d.row, batchId, actorUid, targetDateTs);
           if (!snap.exists()) {
             tx.set(mrRef, { ...data, createdAt: serverTimestamp(), createdBy: actorUid });
-            return { outcome: "created" as const, before: null, payloadTotalSales: data.totalSales };
+            return {
+              outcome: "created" as const,
+              before: null,
+              payloadTotalSales: data.totalSales,
+              payloadShimeiSales: data.shimeiSales,
+            };
           }
           // storeId / castId / month はID構造上同一。createdAt / createdBy は保持される
           const cur = snap.data() as MonthlyResultDoc;
@@ -412,9 +420,19 @@ export async function executeExcelImport(
             // 対象日が今回未指定の場合は既存値を保持する（後方互換・意図しない消去防止）
             const patch = targetDateTs == null ? { ...data, targetDate: cur.targetDate ?? null } : data;
             tx.update(mrRef, patch);
-            return { outcome: "updated" as const, before: mrBusinessFields(cur), payloadTotalSales: data.totalSales };
+            return {
+              outcome: "updated" as const,
+              before: mrBusinessFields(cur),
+              payloadTotalSales: data.totalSales,
+              payloadShimeiSales: data.shimeiSales,
+            };
           }
-          return { outcome: "skipped" as const, before: mrBusinessFields(cur), payloadTotalSales: data.totalSales };
+          return {
+            outcome: "skipped" as const,
+            before: mrBusinessFields(cur),
+            payloadTotalSales: data.totalSales,
+            payloadShimeiSales: data.shimeiSales,
+          };
         });
         // 再インポート時の追跡ログ（Excel値・既存値・保存payload・保存後の再取得値を
         // 1行ずつ対応付ける。再取得は書き込みが実際に反映されたかの検証を兼ねる）。
@@ -423,20 +441,28 @@ export async function executeExcelImport(
         if (process.env.NODE_ENV !== "production") {
           try {
             const verifySnap = await getDoc(mrRef);
-            const afterTotalSales = verifySnap.exists()
-              ? (verifySnap.data() as MonthlyResultDoc).totalSales
-              : null;
+            const afterDoc = verifySnap.exists() ? (verifySnap.data() as MonthlyResultDoc) : null;
+            const afterTotalSales = afterDoc?.totalSales ?? null;
             console.info("[excelImport:monthlyResults]", {
               rowNumber: d.row.rowNumber,
               name: d.row.name,
               castId,
               docId: mrRef.id,
               existingDecision: d.existing,
+              // 段階2: Excel読み込み結果（指名・場内・計算後の合計）
+              excelShimeiSales: d.row.shimeiSales ?? null,
+              excelJounaiCount: d.row.jounaiCount ?? null,
               excelTotalSales: d.row.totalSales,
               beforeTotalSales:
                 (mrOutcome.before as { totalSales?: number } | null)?.totalSales ?? null,
+              // 段階2: Firestoreへの保存payloadと、保存直後に読み戻した実際の値
+              payloadShimeiSales: mrOutcome.payloadShimeiSales,
               payloadTotalSales: mrOutcome.payloadTotalSales,
+              afterShimeiSales: afterDoc?.shimeiSales ?? null,
               afterTotalSales,
+              // ランキング（src/lib/ranking.ts の RANK_CATS "sales"）はFirestoreの
+              // totalSalesをそのまま使用するため、afterTotalSalesがランキング表示値と一致する
+              rankingUsedSales: afterTotalSales,
               outcome: mrOutcome.outcome,
             });
           } catch {

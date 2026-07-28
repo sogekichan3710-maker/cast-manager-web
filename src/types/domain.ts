@@ -123,6 +123,12 @@ export interface MonthlyResultDoc {
   storeId: string;
   month: string; // YYYY-MM に正規化して保存
   totalSales: number;
+  /**
+   * 指名売上（金額）。totalSalesは「指名 + 場内」を保存する仕様のため、
+   * 検証用に内訳を別フィールドとしても保持する（PR: 売上ランキング金額の不一致調査）。
+   * Excel側に「指名」列が無い旧データ・旧フォーマットのシートでは undefined
+   */
+  shimeiSales?: number;
   payment: number;
   honshimeiCount: number;
   honshimeiGroupCount: number;
