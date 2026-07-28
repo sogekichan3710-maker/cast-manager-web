@@ -1106,17 +1106,9 @@ function RowCard({
       </div>
       {!!row.shimeiSales && (
         <div className="page-sub" style={{ marginTop: -4, marginBottom: 6 }}>
-          内訳（参考）: 指名 ¥{row.shimeiSales.toLocaleString()}（セル{row.shimeiSalesCell?.address ?? "―"}）
-          {" + "}
-          場内 ¥{row.jounaiCount.toLocaleString()}（セル{row.jounaiCountCell?.address ?? "―"}）
-          {" = "}¥{(row.shimeiSales + row.jounaiCount).toLocaleString()}
-        </div>
-      )}
-      {row.totalSalesBreakdownMismatch && (
-        <div className="error-box">
-          ⚠ 指名+場内の合算値（¥{((row.shimeiSales ?? 0) + row.jounaiCount).toLocaleString()}）が「合計」セルの値
-          （¥{row.totalSales.toLocaleString()}）と一致しません。シート・列の取り違えの可能性があるため、Excelを
-          ご確認ください（保存されるtotalSalesは「合計」セルの値です）。
+          内訳（参考。totalSalesの計算には使わない）: 指名 ¥{row.shimeiSales.toLocaleString()}
+          （セル{row.shimeiSalesCell?.address ?? "―"}） + 場内 ¥{row.jounaiCount.toLocaleString()}
+          （セル{row.jounaiCountCell?.address ?? "―"}）
         </div>
       )}
       {row.totalSalesCell?.formula && (

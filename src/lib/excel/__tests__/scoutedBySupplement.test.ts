@@ -6,7 +6,7 @@ import { parseMonthlyExcel } from "@/lib/excel/parseMonthlyExcel";
  * 実店舗のExcel（VIRGO給料明細）で確認された構造を再現するテスト。
  *
  * 主シート（月別成績。「源氏名」等）にはスカウト者/情報提供者列が無く、
- * 別シート（「キャスト実績」相当）にのみ「情報提供者」または「スカウト者」
+ * 別シート（「情報提供者一覧」相当）にのみ「情報提供者」または「スカウト者」
  * 列が存在する。かつそのシートの名前列は「区分／No／氏名」の3列が
  * 結合セルになっており、素直な単一列ヘッダー判定では区分列やNo列を
  * 誤って名前列としてしまう（過去に「Excel側が空欄72件」という誤判定を
@@ -38,7 +38,7 @@ function mainSheetRows(): unknown[][] {
 }
 
 /**
- * 「キャスト実績」相当シート。ヘッダー「キャスト名」が区分／No／氏名の
+ * 「情報提供者一覧」相当シート。ヘッダー「キャスト名」が区分／No／氏名の
  * 3列（col0-2）にまたがる結合セル。実データは区分列(col0)が空欄がち、
  * No列(col1)は数値のみ、氏名は col2 のみに入っている。
  */
@@ -59,12 +59,12 @@ const companionMerges: XLSX.Range[] = [{ s: { r: 1, c: 0 }, e: { r: 1, c: 2 } }]
 describe("scoutedBy cross-sheet supplement", () => {
   it("「情報提供者」列を別シートから氏名一致で補完する", () => {
     const buf = makeWorkbookWithMerges({
-      一覧: { rows: mainSheetRows() },
-      キャスト実績: { rows: companionSheetRows("情報提供者"), merges: companionMerges },
+      キャスト実績: { rows: mainSheetRows() },
+      情報提供者一覧: { rows: companionSheetRows("情報提供者"), merges: companionMerges },
     });
     const result = parseMonthlyExcel(buf);
 
-    expect(result.sheetName).toBe("一覧");
+    expect(result.sheetName).toBe("キャスト実績");
     const byName = Object.fromEntries(result.rows.map((r) => [r.name, r.scoutedBy]));
     expect(byName["あいり"]).toBe("田中");
     expect(byName["ももか"]).toBe("佐藤");
@@ -72,17 +72,17 @@ describe("scoutedBy cross-sheet supplement", () => {
     expect(byName["みらい"]).toBe(""); // 補完元シートでも空欄 → 空欄のまま
 
     expect(result.scoutedByDebug?.source).toBe("supplement");
-    expect(result.scoutedByDebug?.sheetName).toBe("キャスト実績");
+    expect(result.scoutedByDebug?.sheetName).toBe("情報提供者一覧");
     expect(result.scoutedByDebug?.headerLabel).toBe("情報提供者");
     expect(result.scoutedByDebug?.nameColumnNumber).toBe(3); // 結合セル内でcol2(1始まり3列目)を正しく選択
     expect(result.headerMap.scoutedBy).toContain("情報提供者");
-    expect(result.headerMap.scoutedBy).toContain("キャスト実績");
+    expect(result.headerMap.scoutedBy).toContain("情報提供者一覧");
   });
 
   it("「スカウト者」列（旧表記）でも同様に補完できる", () => {
     const buf = makeWorkbookWithMerges({
-      一覧: { rows: mainSheetRows() },
-      キャスト実績: { rows: companionSheetRows("スカウト者"), merges: companionMerges },
+      キャスト実績: { rows: mainSheetRows() },
+      情報提供者一覧: { rows: companionSheetRows("スカウト者"), merges: companionMerges },
     });
     const result = parseMonthlyExcel(buf);
 
@@ -98,13 +98,13 @@ describe("scoutedBy cross-sheet supplement", () => {
       ["あいり", 5000, 20, 1500000, 10, 5, 3, 520000, "直接記載"],
     ];
     const buf = makeWorkbookWithMerges({
-      一覧: { rows: rowsWithColumn },
+      キャスト実績: { rows: rowsWithColumn },
     });
     const result = parseMonthlyExcel(buf);
 
     expect(result.rows[0].scoutedBy).toBe("直接記載");
     expect(result.scoutedByDebug?.source).toBe("primary");
-    expect(result.scoutedByDebug?.sheetName).toBe("一覧");
+    expect(result.scoutedByDebug?.sheetName).toBe("キャスト実績");
     expect(result.headerMap.scoutedBy).toBe("情報提供者");
   });
 
@@ -117,8 +117,8 @@ describe("scoutedBy cross-sheet supplement", () => {
       [null, 2, "あいり", 5000, 1500000, 20, "佐藤"], // 同名で別の値（重複データ・矛盾）
     ];
     const buf = makeWorkbookWithMerges({
-      一覧: { rows: mainSheetRows() },
-      キャスト実績: { rows: companionRows, merges: companionMerges },
+      キャスト実績: { rows: mainSheetRows() },
+      情報提供者一覧: { rows: companionRows, merges: companionMerges },
     });
     const result = parseMonthlyExcel(buf);
 
@@ -128,7 +128,7 @@ describe("scoutedBy cross-sheet supplement", () => {
 
   it("どのシートにも名前+スカウト者/情報提供者列が見つからない場合はsource:noneになる", () => {
     const buf = makeWorkbookWithMerges({
-      一覧: { rows: mainSheetRows() },
+      キャスト実績: { rows: mainSheetRows() },
     });
     const result = parseMonthlyExcel(buf);
 

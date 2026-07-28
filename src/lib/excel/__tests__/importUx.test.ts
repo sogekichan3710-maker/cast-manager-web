@@ -64,12 +64,13 @@ function cast(partial: Partial<MatchableCast>): MatchableCast {
 
 function testWorkbookBuffer(): ArrayBuffer {
   const rows: unknown[][] = [
-    ["源氏名", "時給", "総売上", "支給額", "本指名", "場内", "同伴", "出勤日数", "出勤時間"],
+    ["源氏名", "時給", "合計", "支給額", "本指名", "場内", "同伴", "出勤日数", "出勤時間"],
     ["あいり", 5000, 1000000, 500000, 5, 2, 1, 15, 70],
     ["ももか", 4500, 800000, 400000, 3, 1, 0, 12, 55],
   ];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "給料明細");
+  // 採用シートは「キャスト実績」固定（他のシート名は自動判定されない）
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "キャスト実績");
   return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
 }
 

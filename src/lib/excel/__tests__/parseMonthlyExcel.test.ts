@@ -13,6 +13,11 @@ import {
  * 注: 実ファイルは本環境に添付されていないため、報告された症状
  * （シート「設定」・76行検出・上記の誤検出項目）を忠実に再現した
  * 合成ブックで検証している。実ファイル入手後に同テストで再確認すること。
+ *
+ * 【仕様変更】売上ランキング金額の不一致調査の結果、採用シートは「キャスト実績」
+ * という名前のシートに固定する仕様になった（スコアリングによる自動判定・
+ * 他シートへのフォールバックは廃止）。以下のフィクスチャは元々「給料明細」
+ * という名前だったが、この仕様変更に合わせて「キャスト実績」へ変更している。
  */
 
 /** 報告された「設定」シート相当（バック率・単価などの設定/集計領域） */
@@ -37,12 +42,12 @@ function settingsSheetRows(): unknown[][] {
   return rows;
 }
 
-/** 正しい給料明細シート相当 */
+/** 正しい給料明細シート相当（採用シート名は「キャスト実績」固定） */
 function payrollSheetRows(): unknown[][] {
   return [
     ["VIRGO 2024年7月 キャスト給料明細", "", "", "", "", "", "", "", "", ""],
     ["", "", "", "", "", "", "", "", "", ""],
-    ["源氏名", "時給", "出勤日数", "出勤時間", "総売上", "本指名", "場内", "同伴", "支給額", "備考"],
+    ["源氏名", "時給", "出勤日数", "出勤時間", "合計", "本指名", "場内", "同伴", "支給額", "備考"],
     ["あいり", 5000, 20, 100, 1500000, 10, 5, 3, 520000, ""],
     ["ももか", 4500, 18, 85, 900000, 6, 8, 1, 400000, "新人"],
     ["55", 0, 0, 0, 0, 0, 0, 0, 0, ""], // データ範囲内の数字だけ行
@@ -62,21 +67,20 @@ function makeWorkbook(sheets: Record<string, unknown[][]>): ArrayBuffer {
   return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
 }
 
-/** 「設定」シートが先頭にある実ファイル相当のブック */
+/** 「設定」シートが先頭にある実ファイル相当のブック（採用対象は「キャスト実績」） */
 function realFileLikeBuffer(): ArrayBuffer {
   return makeWorkbook({
     設定: settingsSheetRows(),
-    給料明細: payrollSheetRows(),
+    キャスト実績: payrollSheetRows(),
   });
 }
 
-describe("parseMonthlyExcel: シート自動判定", () => {
-  it("「設定」シートが先頭でも給料明細シートを採用する", () => {
+describe("parseMonthlyExcel: シート選択は「キャスト実績」のみ・自動判定やフォールバックはしない", () => {
+  it("「設定」シートが先頭にあっても「キャスト実績」シートを採用する", () => {
     const result = parseMonthlyExcel(realFileLikeBuffer());
-    expect(result.sheetName).toBe("給料明細");
+    expect(result.sheetName).toBe("キャスト実績");
     const settings = result.sheets.find((s) => s.name === "設定");
     expect(settings?.adopted).toBe(false);
-    expect(settings?.reason).toContain("ヘッダー行を検出できない");
   });
 
   it("採用シートのヘッダー行・データ範囲を正しく検出する", () => {
@@ -86,7 +90,7 @@ describe("parseMonthlyExcel: シート自動判定", () => {
     expect(result.dataEndRow).toBe(8); // 最後のキャスト行（れいな）
     expect(result.headerMap.name).toBe("源氏名");
     expect(result.headerMap.hourlyWage).toBe("時給");
-    expect(result.headerMap.totalSales).toBe("総売上");
+    expect(result.headerMap.totalSales).toBe("合計");
     expect(result.headerMap.payment).toBe("支給額");
   });
 
@@ -96,9 +100,56 @@ describe("parseMonthlyExcel: シート自動判定", () => {
     );
   });
 
-  it("どのシートでもヘッダーを検出できない場合はシート一覧付きでエラー", () => {
+  it("「キャスト実績」という名前のシートが無い場合はエラーになる（自動フォールバックしない）", () => {
+    const buf = makeWorkbook({ 設定: settingsSheetRows(), 一覧: payrollSheetRows() });
+    expect(() => parseMonthlyExcel(buf)).toThrow(/キャスト実績/);
+  });
+
+  it("どのシートにも「キャスト実績」という名前が無い場合、エラーメッセージにシート一覧が含まれる", () => {
     const buf = makeWorkbook({ 設定: settingsSheetRows() });
     expect(() => parseMonthlyExcel(buf)).toThrow(/設定/);
+  });
+
+  it("「一覧」シートに紛らわしい「合計」列があっても、「キャスト実績」シートしか参照しない", () => {
+    /**
+     * 報告された不具合の再現: ワークブックに「一覧」シートと「キャスト実績」シートの
+     * 両方があり、どちらにも「合計」列が存在する（それぞれ意味・値が異なる）実ファイルで、
+     * 自動判定（スコアリング）が「一覧」シートを誤って採用し、その「合計」列（本件と
+     * 無関係な515,843円）がtotalSalesとして保存されていた。
+     * 例: せいか 指名5,818,200 + 場内売上75,400 = 合計5,893,600（キャスト実績シート）
+     *     ／ 一覧シートの「合計」列は515,843円という無関係な値。
+     */
+    const ichiranRows: unknown[][] = [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "合計", "支給額", "備考"],
+      ["せいか", 5000, 22, 110, 12, 4, 515843, 900000, ""], // 「キャスト実績」とは無関係な集計
+    ];
+    const castJissekiRows: unknown[][] = [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "売上", "指名", "場内売上", "合計", "本指名", "支給額", "備考"],
+      // 「売上」列（指名のみの値で紛らわしい）は無視し、「合計」列の実値のみを使う
+      ["せいか", 5000, 22, 110, 5818200, 5818200, 75400, 5893600, 12, 900000, ""],
+    ];
+    const buf = makeWorkbook({ 一覧: ichiranRows, キャスト実績: castJissekiRows });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("キャスト実績");
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSales).toBe(5893600); // キャスト実績シートの「合計」列
+    expect(seika.totalSales).not.toBe(515843); // 一覧シートの「合計」列は使用しない
+    expect(seika.shimeiSales).toBe(5818200); // 参考値として保持するが、totalSalesの計算には使わない
+    expect(seika.jounaiCount).toBe(75400);
+  });
+
+  it("シート名の並び順（一覧が先）に関わらず「キャスト実績」シートが採用される", () => {
+    const ichiranRows: unknown[][] = [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "合計", "支給額", "備考"],
+      ["せいか", 5000, 22, 110, 12, 4, 515843, 900000, ""],
+    ];
+    const castJissekiRows: unknown[][] = [
+      ["源氏名", "時給", "出勤日数", "出勤時間", "合計", "本指名", "支給額", "備考"],
+      ["せいか", 5000, 22, 110, 5893600, 12, 900000, ""],
+    ];
+    const buf = makeWorkbook({ キャスト実績: castJissekiRows, 一覧: ichiranRows });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("キャスト実績");
   });
 });
 
@@ -107,19 +158,19 @@ describe("parseMonthlyExcel: 総売上セルの参照情報（照合確認画面
     const result = parseMonthlyExcel(realFileLikeBuffer());
     const airi = result.rows.find((r) => r.name === "あいり")!;
     // payrollSheetRows: 1行目タイトル/2行目空/3行目ヘッダー/4行目あいり。
-    // 総売上は5列目（源氏名,時給,出勤日数,出勤時間,総売上 → E列）
+    // 合計は5列目（源氏名,時給,出勤日数,出勤時間,合計 → E列）
     expect(airi.totalSalesCell).toEqual({ address: "E4", formula: null });
   });
 
   it("総売上セルが数式の場合は数式を検出し、totalSalesは保存時のキャッシュ値をそのまま返す（xlsxは再計算しない）", () => {
     const XLSXmod = XLSX;
     const ws = XLSXmod.utils.aoa_to_sheet(payrollSheetRows());
-    // あいり行（Excel上4行目）の総売上セル(E4)を数式に差し替える。
+    // あいり行（Excel上4行目）の合計セル(E4)を数式に差し替える。
     // 本来の再計算結果がいくつであっても、ファイルが再計算・保存されていなければ
     // v（キャッシュ値）は古いままになりうることを模擬する
     ws["E4"] = { t: "n", v: 1000000, f: "F4+900000" };
     const wb = XLSXmod.utils.book_new();
-    XLSXmod.utils.book_append_sheet(wb, ws, "給料明細");
+    XLSXmod.utils.book_append_sheet(wb, ws, "キャスト実績");
     const buf = XLSXmod.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
 
     const result = parseMonthlyExcel(buf);
@@ -132,101 +183,41 @@ describe("parseMonthlyExcel: 総売上セルの参照情報（照合確認画面
   });
 });
 
-describe("parseMonthlyExcel: 総売上は「指名売上+場内売上=合計」列を優先する", () => {
-  /**
-   * 運用上、キャスト管理アプリの「総売上」は指名売上と場内売上を合算した
-   * 「合計」列を保存する仕様。しかし「合計」列と紛らわしい「売上」列
-   * （実際には指名売上のみの値）が同じシートに存在する実ファイルがあり、
-   * 従来のエイリアス優先順位ではその「売上」列（指名売上のみ）を誤って
-   * totalSalesとして読み込んでいた。
-   */
-  function payrollWithBreakdownRows(): unknown[][] {
-    return [
-      ["源氏名", "時給", "出勤日数", "出勤時間", "指名売上", "場内", "売上", "合計", "本指名", "同伴", "支給額", "備考"],
-      // 指名売上1,200,000 + 場内売上300,000 = 合計1,500,000。
-      // 「売上」列（1,200,000=指名売上のみ）は紛らわしいが合計とは異なる値にしてある
-      ["あいり", 5000, 20, 100, 1200000, 300000, 1200000, 1500000, 10, 3, 520000, ""],
-      ["ももか", 4500, 18, 85, 800000, 100000, 800000, 900000, 6, 1, 400000, "新人"],
-    ];
-  }
-
-  it("指名売上・場内売上・合計の列がある場合は「合計」がtotalSalesとして保存される（指名売上のみの「売上」列は採用しない）", () => {
-    const buf = makeWorkbook({ 給料明細: payrollWithBreakdownRows() });
+describe("parseMonthlyExcel: totalSalesは「合計」列の値のみを使用する（再計算・フォールバックなし）", () => {
+  it("「合計」列がある場合はその実値をそのまま使う（指名のみの「売上」列等は無視）", () => {
+    const buf = makeWorkbook({
+      キャスト実績: [
+        ["源氏名", "時給", "出勤日数", "出勤時間", "指名売上", "場内", "売上", "合計", "本指名", "同伴", "支給額", "備考"],
+        // 指名売上1,200,000 + 場内売上300,000 = 合計1,500,000。
+        // 「売上」列（1,200,000=指名売上のみ）は紛らわしいが合計とは異なる値にしてある
+        ["あいり", 5000, 20, 100, 1200000, 300000, 1200000, 1500000, 10, 3, 520000, ""],
+        ["ももか", 4500, 18, 85, 800000, 100000, 800000, 900000, 6, 1, 400000, "新人"],
+      ],
+    });
     const result = parseMonthlyExcel(buf);
     expect(result.headerMap.totalSales).toBe("合計");
     const airi = result.rows.find((r) => r.name === "あいり")!;
     const momoka = result.rows.find((r) => r.name === "ももか")!;
-    expect(airi.totalSales).toBe(1500000); // 合計（1,200,000 + 300,000）
-    expect(airi.totalSales).not.toBe(1200000); // 指名売上のみの値は採用しない
+    expect(airi.totalSales).toBe(1500000);
+    expect(airi.totalSales).not.toBe(1200000); // 指名売上のみの「売上」列は採用しない
     expect(momoka.totalSales).toBe(900000);
   });
 
-  it("「合計」列が無い旧フォーマットでは、従来通り「総売上」列がtotalSalesとして保存される", () => {
-    const result = parseMonthlyExcel(realFileLikeBuffer());
-    expect(result.headerMap.totalSales).toBe("総売上");
+  it("「合計」列が無い場合、totalSalesは0になる（「総売上」「売上」等へはフォールバックしない）", () => {
+    const buf = makeWorkbook({
+      キャスト実績: [
+        ["源氏名", "時給", "出勤日数", "総売上", "支給額"],
+        ["あいり", 5000, 20, 1500000, 520000],
+      ],
+    });
+    const result = parseMonthlyExcel(buf);
+    expect(result.headerMap.totalSales).toBeUndefined();
     const airi = result.rows.find((r) => r.name === "あいり")!;
-    expect(airi.totalSales).toBe(1500000); // payrollSheetRowsの「総売上」列の値のまま
-  });
-});
-
-describe("parseMonthlyExcel: totalSalesは必ず「キャスト実績」シートの「合計」列を使用する", () => {
-  /**
-   * 報告された不具合の再現: ワークブックに「一覧」シートと「キャスト実績」シートの
-   * 両方があり、どちらにも「合計」列が存在する（それぞれ意味・値が異なる）実ファイルで、
-   * 自動判定（スコアリング）が「一覧」シートを誤って採用し、その「合計」列（本件と
-   * 無関係な515,843円）がtotalSalesとして保存されていた。
-   * 売上ランキング・キャスト詳細・Firestore保存は必ず「キャスト実績」シートの
-   * 「売上・指名・場内売上・合計」の「合計」を参照する仕様のため、同名の紛らわしい
-   * シートが他にあっても「キャスト実績」シートを最優先で採用することを検証する。
-   * 例: せいか 指名5,818,200 + 場内売上75,400 = 合計5,893,600（キャスト実績シート）
-   *     ／ 一覧シートの「合計」列は515,843円という無関係な値。
-   */
-  function ichiranRowsWithUnrelatedTotal(): unknown[][] {
-    return [
-      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "合計", "支給額", "備考"],
-      // 「一覧」シートの「合計」は「キャスト実績」シートとは無関係な集計（例: 別基準の合計）
-      ["せいか", 5000, 22, 110, 12, 4, 515843, 900000, ""],
-    ];
-  }
-
-  function castJissekiRows(): unknown[][] {
-    return [
-      ["源氏名", "時給", "出勤日数", "出勤時間", "売上", "指名", "場内売上", "合計", "本指名", "支給額", "備考"],
-      // 「売上」列（指名のみの値で紛らわしい）と「合計」列（指名+場内の正しい値）の両方がある
-      ["せいか", 5000, 22, 110, 5818200, 5818200, 75400, 5893600, 12, 900000, ""],
-    ];
-  }
-
-  it("「一覧」シートに紛らわしい「合計」列があっても、「キャスト実績」シートが優先採用される", () => {
-    const buf = makeWorkbook({
-      一覧: ichiranRowsWithUnrelatedTotal(),
-      キャスト実績: castJissekiRows(),
-    });
-    const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
-    const seika = result.rows.find((r) => r.name === "せいか")!;
-    expect(seika.totalSales).toBe(5893600); // キャスト実績シートの「合計」列
-    expect(seika.totalSales).not.toBe(515843); // 一覧シートの「合計」列は使用しない
-    expect(seika.shimeiSales).toBe(5818200);
-    expect(seika.jounaiCount).toBe(75400);
-    expect(seika.totalSalesCell?.address).toBeTruthy(); // 「合計」列の実セルに由来する
+    expect(airi.totalSales).toBe(0); // 「総売上」列があってもフォールバックしない
+    expect(result.warnings.some((w) => w.includes("合計"))).toBe(true);
   });
 
-  it("シート名の並び順（一覧が先）に関わらず「キャスト実績」シートが優先採用される", () => {
-    const buf = makeWorkbook({
-      キャスト実績: castJissekiRows(),
-      一覧: ichiranRowsWithUnrelatedTotal(),
-    });
-    const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
-  });
-
-  it("「キャスト実績」シートが無い場合は従来通りスコアの高いシートが採用される（後方互換）", () => {
-    const result = parseMonthlyExcel(realFileLikeBuffer());
-    expect(result.sheetName).toBe("給料明細");
-  });
-
-  it("指名+場内の合算値が「合計」列と一致しない場合はtotalSalesBreakdownMismatchがtrueになる（値そのものは上書きしない）", () => {
+  it("指名+場内の合算値が「合計」列の値と一致しなくても、totalSalesは「合計」列の実値のまま（再計算しない）", () => {
     const buf = makeWorkbook({
       キャスト実績: [
         ["源氏名", "時給", "出勤日数", "出勤時間", "指名", "場内", "合計", "支給額", "備考"],
@@ -235,8 +226,7 @@ describe("parseMonthlyExcel: totalSalesは必ず「キャスト実績」シー�
     });
     const result = parseMonthlyExcel(buf);
     const seika = result.rows.find((r) => r.name === "せいか")!;
-    expect(seika.totalSales).toBe(515843); // 「合計」列の実値をそのまま採用（上書きしない）
-    expect(seika.totalSalesBreakdownMismatch).toBe(true);
+    expect(seika.totalSales).toBe(515843); // 「合計」列の実値をそのまま採用（指名+場内では上書きしない）
   });
 });
 
@@ -279,18 +269,14 @@ describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
     expect(airi.payment).toBe(520000);
   });
 
-  it("キャスト行0件のシートしか無い場合は採用せずエラーになる", () => {
+  it("「キャスト実績」シートに有効なキャスト行が無い場合は0件で警告付きの結果を返す（採用シート自体は固定のためエラーにはしない）", () => {
     const buf = makeWorkbook({
-      空シート: [["源氏名", "時給", "総売上"], ["合計", 0, 0]],
+      キャスト実績: [["源氏名", "時給", "合計"], ["合計", 0, 0]],
     });
-    expect(() => parseMonthlyExcel(buf)).toThrow();
-  });
-
-  it("採用シート名が「設定」等の場合は警告を出す", () => {
-    const buf = makeWorkbook({ 設定: payrollSheetRows() });
     const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("設定");
-    expect(result.warnings.some((w) => w.includes("設定"))).toBe(true);
+    expect(result.sheetName).toBe("キャスト実績");
+    expect(result.rows).toEqual([]);
+    expect(result.warnings.some((w) => w.includes("キャスト行を1件も検出できませんでした"))).toBe(true);
   });
 });
 
@@ -301,16 +287,24 @@ describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
  *   61〜70の数値名プレースホルダー行と合計行が続く）を匿名化して再現。
  * 実ファイルそのものは個人情報（源氏名・給与額）を含むためコミットしない。
  * 実ファイルでの検証結果: 一覧シート採用・60名検出・全フィールド一致（PR #1参照）。
+ *
+ * 【仕様変更】採用シートは「キャスト実績」固定になったため、この実ファイルの
+ * ように売上明細が「一覧」シートにある場合、自動判定では読み込めなくなった
+ * （下記の最初のテストで検証）。実データが「一覧」側にある場合は、シートの
+ * 手動選択（opts.sheetName）で引き続き同じ結果を得られる（後続のテストで検証）。
+ * また、実ファイルの合計列の実際の見出しは「売上」だったが、totalSalesの
+ * フォールバック廃止（COLUMN_ALIASES.totalSales = ["合計"]のみ）に伴い、
+ * この列も「合計」に統一している。
  */
 function realStructureWorkbook(): ArrayBuffer {
   // 「一覧」— 実ファイルと同じ列構成（源氏名/時給/出勤数/労働時間/同伴組/
-  // 本指名/場内/売上/総支給額。差引給与・最終支給額など類似列も含む）
+  // 本指名/場内/合計/総支給額。差引給与・最終支給額など類似列も含む）
   const ichiran: unknown[][] = [
     ["", "VIRGO", 7, "月度", "", "", "", "", "給与支給表"],
     ["", "源氏名", "時給", "歩合対象", "歩合比率", "登録有", "出勤数", "労働時間", "日当",
       "同伴組", "同バック", "その他", "本指名", "本指バック", "場内", "場内バック", "延長",
       "ドリンク", "ボトル", "バック合計", "歩合差額", "総支給額", "日払い", "名刺代", "罰金",
-      "差引給与", "売上", "場内売"],
+      "差引給与", "合計", "場内売"],
     [1, "テストあ", 7000, 1, 0.6, 0, 14, 32.99999999999999, 231000, 6, 10000, 0, 34, 34000,
       2, 1000, 0, 95040, 127920, 267960, 404880, 498959.99999999994, 2400, 0, 0, 496560, 1506400, 0],
     [2, "テストい", 12000, 1, 0.6, 0, 8, 31.5, 378000, 1, 5000, 0, 6.5, 6500,
@@ -365,20 +359,25 @@ function realStructureWorkbook(): ArrayBuffer {
 }
 
 describe("parseMonthlyExcel: 実ファイル構造（VIRGO給料明細）の再現", () => {
-  it("「一覧」シートを採用し、設定・支給表・個人別・予備シートは採用しない", () => {
-    const result = parseMonthlyExcel(realStructureWorkbook());
+  it("「キャスト実績」という名前のシートが無いため、自動判定ではエラーになる", () => {
+    // この実ファイルは売上明細が「一覧」シートにあり「キャスト実績」という
+    // 名前のシートが無いため、仕様変更後は自動判定できない（手動選択が必要）
+    expect(() => parseMonthlyExcel(realStructureWorkbook())).toThrow(/キャスト実績/);
+  });
+
+  it("シートを手動選択すれば、「一覧」シートを採用し、設定・支給表・個人別・予備シートは採用しない", () => {
+    const result = parseMonthlyExcel(realStructureWorkbook(), { sheetName: "一覧" });
     expect(result.sheetName).toBe("一覧");
     expect(result.headerRowNumber).toBe(2);
     expect(result.dataStartRow).toBe(3);
     expect(result.dataEndRow).toBe(5);
-    expect(result.sheets.find((s) => s.name === "支給表 ")?.reason).toContain("ヘッダー行を検出できない");
     for (const s of result.sheets) {
       if (s.name !== "一覧") expect(s.adopted).toBe(false);
     }
   });
 
-  it("実ファイルの列名（出勤数/労働時間/同伴組/売上/総支給額）を正しくマッピングする", () => {
-    const result = parseMonthlyExcel(realStructureWorkbook());
+  it("実ファイルの列名（出勤数/労働時間/同伴組/合計/総支給額）を正しくマッピングする", () => {
+    const result = parseMonthlyExcel(realStructureWorkbook(), { sheetName: "一覧" });
     expect(result.headerMap).toMatchObject({
       name: "源氏名",
       hourlyWage: "時給",
@@ -387,7 +386,7 @@ describe("parseMonthlyExcel: 実ファイル構造（VIRGO給料明細）の再�
       douhan: "同伴組",
       honshimeiCount: "本指名",
       jounaiCount: "場内",
-      totalSales: "売上",
+      totalSales: "合計",
       payment: "総支給額",
     });
     const a = result.rows.find((r) => r.name === "テストあ")!;
@@ -407,7 +406,7 @@ describe("parseMonthlyExcel: 実ファイル構造（VIRGO給料明細）の再�
   });
 
   it("数値名の予備行と合計行は取り込まず、キャスト3名だけを検出する", () => {
-    const result = parseMonthlyExcel(realStructureWorkbook());
+    const result = parseMonthlyExcel(realStructureWorkbook(), { sheetName: "一覧" });
     expect(result.rows.map((r) => r.name)).toEqual(["テストあ", "テストい", "テストう"]);
     expect(result.excluded.filter((e) => e.reason.includes("数値のみ")).length).toBe(2);
     expect(result.excluded.some((e) => e.reason.includes("空欄"))).toBe(true); // 合計行
@@ -418,8 +417,8 @@ describe("parseMonthlyExcel: 実ファイル構造（VIRGO給料明細）の再�
 describe("parseMonthlyExcel: スカウト者列（PR6）", () => {
   it("「スカウト者」列を検出し、各行のscoutedByへ取り込む", () => {
     const buf = makeWorkbook({
-      給料明細: [
-        ["源氏名", "時給", "出勤日数", "総売上", "支給額", "スカウト者"],
+      キャスト実績: [
+        ["源氏名", "時給", "出勤日数", "合計", "支給額", "スカウト者"],
         ["あいり", 5000, 20, 1500000, 520000, "田中"],
         ["ももか", 4500, 18, 900000, 400000, ""],
       ],
@@ -433,7 +432,7 @@ describe("parseMonthlyExcel: スカウト者列（PR6）", () => {
   });
 
   it("スカウト者列が存在しないファイルでは空文字になる（従来ファイルへの後方互換）", () => {
-    const result = parseMonthlyExcel(realStructureWorkbook());
+    const result = parseMonthlyExcel(realStructureWorkbook(), { sheetName: "一覧" });
     expect(result.rows.every((r) => r.scoutedBy === "")).toBe(true);
   });
 });
