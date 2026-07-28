@@ -158,6 +158,7 @@ export default function RankingPage() {
                     key={r.castId}
                     href={c ? `/casts/${c.id}` : "#"}
                     className="rank-row-link"
+                    title={`castId: ${r.castId} ／ monthlyResultsドキュメントID: ${r.id}`}
                   >
                     <span className={`rank-num ${medal}`}>{i + 1}</span>
                     <span className="rank-name">{name}</span>
