@@ -1056,6 +1056,12 @@ function RowCard({
       : undefined;
   const linkedCandidate = match.candidates.find((c) => c.cast.id === rs.castId);
   const salesDiff = existing ? row.totalSales - existing.totalSales : null;
+  // totalSalesは「キャスト実績」シートの「合計」列があれば氏名一致で上書きされる
+  // （行データ本体は採用シートのまま変わらない）。row.totalSalesSheetNameが
+  // 採用シート名と異なれば、この行では実際に上書きが適用されたことを意味する
+  const totalSalesFromOverride =
+    !!row.totalSalesSheetName && row.totalSalesSheetName !== sheetName;
+  const totalSalesSheetLabel = row.totalSalesSheetName ?? sheetName;
 
   return (
     <div className="import-row-card" id={`import-row-${row.rowNumber}`}>
@@ -1098,25 +1104,22 @@ function RowCard({
           </>
         )}
         {" ／ "}
-        シート「{sheetName || "―"}」
+        売上シート「{totalSalesSheetLabel || "―"}」
+        {totalSalesFromOverride && (
+          <span className="badge badge-purple" style={{ marginLeft: 4 }}>
+            「キャスト実績」で上書き
+          </span>
+        )}
         {" ／ "}
-        列「{totalSalesColumnLabel || "―"}」
+        列「{totalSalesFromOverride ? "合計" : totalSalesColumnLabel || "―"}」
         {" ／ "}
         セル{row.totalSalesCell?.address ?? "―"}
       </div>
       {!!row.shimeiSales && (
         <div className="page-sub" style={{ marginTop: -4, marginBottom: 6 }}>
-          内訳（参考）: 指名 ¥{row.shimeiSales.toLocaleString()}（セル{row.shimeiSalesCell?.address ?? "―"}）
-          {" + "}
-          場内 ¥{row.jounaiCount.toLocaleString()}（セル{row.jounaiCountCell?.address ?? "―"}）
-          {" = "}¥{(row.shimeiSales + row.jounaiCount).toLocaleString()}
-        </div>
-      )}
-      {row.totalSalesBreakdownMismatch && (
-        <div className="error-box">
-          ⚠ 指名+場内の合算値（¥{((row.shimeiSales ?? 0) + row.jounaiCount).toLocaleString()}）が「合計」セルの値
-          （¥{row.totalSales.toLocaleString()}）と一致しません。シート・列の取り違えの可能性があるため、Excelを
-          ご確認ください（保存されるtotalSalesは「合計」セルの値です）。
+          内訳（参考。totalSalesの計算には使わない）: 指名 ¥{row.shimeiSales.toLocaleString()}
+          （セル{row.shimeiSalesCell?.address ?? "―"}） + 場内 ¥{row.jounaiCount.toLocaleString()}
+          （セル{row.jounaiCountCell?.address ?? "―"}）
         </div>
       )}
       {row.totalSalesCell?.formula && (

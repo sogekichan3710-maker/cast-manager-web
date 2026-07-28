@@ -169,74 +169,84 @@ describe("parseMonthlyExcel: 総売上は「指名売上+場内売上=合計」�
   });
 });
 
-describe("parseMonthlyExcel: totalSalesは必ず「キャスト実績」シートの「合計」列を使用する", () => {
+describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの「合計」列があればそれを優先採用する", () => {
   /**
-   * 報告された不具合の再現: ワークブックに「一覧」シートと「キャスト実績」シートの
-   * 両方があり、どちらにも「合計」列が存在する（それぞれ意味・値が異なる）実ファイルで、
-   * 自動判定（スコアリング）が「一覧」シートを誤って採用し、その「合計」列（本件と
-   * 無関係な515,843円）がtotalSalesとして保存されていた。
-   * 売上ランキング・キャスト詳細・Firestore保存は必ず「キャスト実績」シートの
-   * 「売上・指名・場内売上・合計」の「合計」を参照する仕様のため、同名の紛らわしい
-   * シートが他にあっても「キャスト実績」シートを最優先で採用することを検証する。
-   * 例: せいか 指名5,818,200 + 場内売上75,400 = 合計5,893,600（キャスト実績シート）
-   *     ／ 一覧シートの「合計」列は515,843円という無関係な値。
+   * 報告された不具合の再現・対応。売上（totalSales）**だけ**を対象にした修正。
+   * 行データ本体（名前・時給・本指名・場内・同伴・支給額等）は、これまでと
+   * 全く同じ「採用シート」（スコアリングで決定。変更なし）から読み込む。
+   * ワークブックに「キャスト実績」という名前のシートがあれば、その「合計」列
+   * だけを氏名一致でtotalSalesに採用する（他の項目には一切影響しない）。
+   * 「キャスト実績」シートが無い、または該当キャストが無い場合は、採用シート
+   * 自身の総売上列（「合計」優先・無ければ「総売上」等へフォールバック。上の
+   * describe参照）がそのまま使われる＝完全に従来通り。
+   *
+   * 例: せいか 指名5,818,200 + 場内売上75,400 = 合計5,893,600（キャスト実績シート）。
+   *     「一覧」シートの「合計」列は515,843円という無関係な値だが、totalSales
+   *     以外の項目（本指名・場内・同伴・支給額等）は引き続き「一覧」シートから
+   *     そのまま読み込む。
    */
-  function ichiranRowsWithUnrelatedTotal(): unknown[][] {
+  function ichiranRows(): unknown[][] {
     return [
-      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "合計", "支給額", "備考"],
-      // 「一覧」シートの「合計」は「キャスト実績」シートとは無関係な集計（例: 別基準の合計）
-      ["せいか", 5000, 22, 110, 12, 4, 515843, 900000, ""],
+      ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"],
+      // 「合計」列は515,843円という、キャスト実績シートとは無関係な値
+      ["せいか", 5000, 22, 110, 12, 4, 2, 515843, 900000, ""],
     ];
   }
 
   function castJissekiRows(): unknown[][] {
     return [
       ["源氏名", "時給", "出勤日数", "出勤時間", "売上", "指名", "場内売上", "合計", "本指名", "支給額", "備考"],
-      // 「売上」列（指名のみの値で紛らわしい）と「合計」列（指名+場内の正しい値）の両方がある
+      // 「売上」列（指名のみの値で紛らわしい）は無視し、「合計」列の実値のみを使う
       ["せいか", 5000, 22, 110, 5818200, 5818200, 75400, 5893600, 12, 900000, ""],
     ];
   }
 
-  it("「一覧」シートに紛らわしい「合計」列があっても、「キャスト実績」シートが優先採用される", () => {
-    const buf = makeWorkbook({
-      一覧: ichiranRowsWithUnrelatedTotal(),
-      キャスト実績: castJissekiRows(),
-    });
+  it("行データ本体は従来通り「一覧」シート（スコアが高い方）から読み、totalSalesだけ「キャスト実績」シートの「合計」で上書きされる", () => {
+    const buf = makeWorkbook({ 一覧: ichiranRows(), キャスト実績: castJissekiRows() });
     const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
+    // 行データ本体の採用シートは「一覧」のまま（スコアリングは変更していない）
+    expect(result.sheetName).toBe("一覧");
     const seika = result.rows.find((r) => r.name === "せいか")!;
-    expect(seika.totalSales).toBe(5893600); // キャスト実績シートの「合計」列
-    expect(seika.totalSales).not.toBe(515843); // 一覧シートの「合計」列は使用しない
-    expect(seika.shimeiSales).toBe(5818200);
-    expect(seika.jounaiCount).toBe(75400);
-    expect(seika.totalSalesCell?.address).toBeTruthy(); // 「合計」列の実セルに由来する
+    // totalSalesだけキャスト実績シートの「合計」列に置き換わる
+    expect(seika.totalSales).toBe(5893600);
+    expect(seika.totalSales).not.toBe(515843); // 一覧シート自身の「合計」列は使われない
+    // それ以外の項目は「一覧」シートの値のまま変更されない
+    expect(seika.honshimeiCount).toBe(12); // 本指名本数
+    expect(seika.jounaiCount).toBe(4); // 場内本数
+    expect(seika.douhan).toBe(2); // 同伴
+    expect(seika.payment).toBe(900000); // 支給額（給料）
+    expect(result.totalSalesOverrideDebug.source).toBe("override");
+    expect(result.totalSalesOverrideDebug.sheetName).toBe("キャスト実績");
   });
 
-  it("シート名の並び順（一覧が先）に関わらず「キャスト実績」シートが優先採用される", () => {
-    const buf = makeWorkbook({
-      キャスト実績: castJissekiRows(),
-      一覧: ichiranRowsWithUnrelatedTotal(),
-    });
+  it("「キャスト実績」シートが無い場合は、採用シート自身のtotalSales列がそのまま使われる（完全に従来通り）", () => {
+    const buf = makeWorkbook({ 一覧: ichiranRows() });
     const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
+    expect(result.sheetName).toBe("一覧");
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSales).toBe(515843); // 「キャスト実績」シートが無いのでそのまま
+    expect(result.totalSalesOverrideDebug.source).toBe("none");
   });
 
-  it("「キャスト実績」シートが無い場合は従来通りスコアの高いシートが採用される（後方互換）", () => {
-    const result = parseMonthlyExcel(realFileLikeBuffer());
-    expect(result.sheetName).toBe("給料明細");
-  });
-
-  it("指名+場内の合算値が「合計」列と一致しない場合はtotalSalesBreakdownMismatchがtrueになる（値そのものは上書きしない）", () => {
+  it("「キャスト実績」シートはあるが該当キャストが見つからない場合、そのキャストのtotalSalesは採用シート自身の値のまま", () => {
     const buf = makeWorkbook({
+      一覧: ichiranRows(),
       キャスト実績: [
-        ["源氏名", "時給", "出勤日数", "出勤時間", "指名", "場内", "合計", "支給額", "備考"],
-        ["せいか", 5000, 22, 110, 5818200, 75400, 515843, 900000, ""], // 合計が指名+場内と食い違う異常データ
+        ["源氏名", "時給", "合計"],
+        ["別のキャスト", 5000, 999999],
       ],
     });
     const result = parseMonthlyExcel(buf);
     const seika = result.rows.find((r) => r.name === "せいか")!;
-    expect(seika.totalSales).toBe(515843); // 「合計」列の実値をそのまま採用（上書きしない）
-    expect(seika.totalSalesBreakdownMismatch).toBe(true);
+    expect(seika.totalSales).toBe(515843); // 上書きされない
+  });
+
+  it("シート名の並び順に関わらず、行データ本体のシート選択・上書きの適用結果は変わらない", () => {
+    const buf = makeWorkbook({ キャスト実績: castJissekiRows(), 一覧: ichiranRows() });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("一覧");
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSales).toBe(5893600);
   });
 });
 
