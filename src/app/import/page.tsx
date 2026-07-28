@@ -1056,6 +1056,12 @@ function RowCard({
       : undefined;
   const linkedCandidate = match.candidates.find((c) => c.cast.id === rs.castId);
   const salesDiff = existing ? row.totalSales - existing.totalSales : null;
+  // totalSalesは「キャスト実績」シートの「合計」列があれば氏名一致で上書きされる
+  // （行データ本体は採用シートのまま変わらない）。row.totalSalesSheetNameが
+  // 採用シート名と異なれば、この行では実際に上書きが適用されたことを意味する
+  const totalSalesFromOverride =
+    !!row.totalSalesSheetName && row.totalSalesSheetName !== sheetName;
+  const totalSalesSheetLabel = row.totalSalesSheetName ?? sheetName;
 
   return (
     <div className="import-row-card" id={`import-row-${row.rowNumber}`}>
@@ -1098,9 +1104,14 @@ function RowCard({
           </>
         )}
         {" ／ "}
-        シート「{sheetName || "―"}」
+        売上シート「{totalSalesSheetLabel || "―"}」
+        {totalSalesFromOverride && (
+          <span className="badge badge-purple" style={{ marginLeft: 4 }}>
+            「キャスト実績」で上書き
+          </span>
+        )}
         {" ／ "}
-        列「{totalSalesColumnLabel || "―"}」
+        列「{totalSalesFromOverride ? "合計" : totalSalesColumnLabel || "―"}」
         {" ／ "}
         セル{row.totalSalesCell?.address ?? "―"}
       </div>

@@ -53,8 +53,10 @@ export interface ExcelMonthlyRow {
    */
   shimeiSalesCell?: ExcelCellRef | null;
   /**
-   * 総売上。「キャスト実績」シートの「合計」列の実値をそのまま使う
-   * （他の値からの再計算・他シートの参照は一切行わない）
+   * 総売上。他の項目（名前・時給・本指名・場内・同伴・支給額等）と同じ採用
+   * シートの「合計」等の別名検出結果が基本値だが、ワークブックに「キャスト実績」
+   * という名前のシートがあれば、その「合計」列を氏名一致で取得し上書きする
+   * （findTotalSalesOverride参照。他の値から計算することはない）
    */
   totalSales: number;
   /**
@@ -62,6 +64,12 @@ export interface ExcelMonthlyRow {
    * 列が無い場合は null。手動構築のテストデータでは undefined でもよい
    */
   totalSalesCell?: ExcelCellRef | null;
+  /**
+   * totalSalesの実際の取得元シート名（照合確認画面でのトレース表示用）。
+   * 「キャスト実績」シートで上書きされた場合はそのシート名、されなかった場合は
+   * 採用シート名と同じになる
+   */
+  totalSalesSheetName?: string;
   payment: number;
   honshimeiCount: number;
   honshimeiGroupCount: number;
@@ -125,6 +133,12 @@ export interface ExcelParseResult {
    * どのシート・どの列から取得したかを追跡できるようにする。
    */
   scoutedByDebug: ScoutedByDebugInfo | null;
+  /**
+   * totalSales（売上）の取得元の詳細（調査・デバッグ表示用）。「キャスト実績」
+   * という名前のシートがあれば、その「合計」列を氏名一致で採用する
+   * （行データ本体の採用シートとは独立。無い場合は採用シート自身の値のまま）
+   */
+  totalSalesOverrideDebug: TotalSalesOverrideDebugInfo;
 }
 
 export interface ScoutedByDebugSample {
@@ -158,7 +172,7 @@ export interface ScoutedByDebugInfo {
 const COLUMN_ALIASES: Record<
   keyof Omit<
     ExcelMonthlyRow,
-    "rowNumber" | "totalSalesCell" | "shimeiSalesCell" | "jounaiCountCell"
+    "rowNumber" | "totalSalesCell" | "totalSalesSheetName" | "shimeiSalesCell" | "jounaiCountCell"
   >,
   string[]
 > = {
@@ -177,25 +191,25 @@ const COLUMN_ALIASES: Record<
     "scoutedby",
     "scout",
   ],
-  // 指名売上（金額）。本指名の本数（honshimeiCount＝「本指名」列）とは別の列。
-  // 「本指名」に前方一致してしまわないよう、findColumnは正規化後の完全一致で
-  // 判定するため「指名」だけの列とは衝突しない
+  // 指名売上（金額・参考値）。本指名の本数（honshimeiCount＝「本指名」列）とは
+  // 別の列。「本指名」に前方一致してしまわないよう、findColumnは正規化後の
+  // 完全一致で判定するため「指名」だけの列とは衝突しない。totalSalesの計算には
+  // 一切使わない（下記totalSales参照）
   shimeiSales: ["指名売上", "指名"],
-  // 総売上（totalSales）は「キャスト実績」シートの「合計」列の値のみを使う仕様。
-  // 別名フォールバック（総売上・売上等）は持たない（余計な自動判定をしないため）。
-  // どのシートを読むかはシート選択で担保する（下記assembleParseResult参照。
-  // 「キャスト実績」という名前のシートのみを採用し、他のシート（「一覧」等）は
-  // 一切参照しない）
-  totalSales: ["合計"],
+  // 総売上（totalSales）。行データ自体は他の項目（本指名・場内・同伴・支給額等）
+  // と同じ採用シートから読むが、totalSalesの値だけは「キャスト実績」という
+  // 名前のシートがあれば、その「合計」列を氏名一致で取得して上書きする
+  // （findTotalSalesOverride参照）。「キャスト実績」シートが無い場合や、
+  // 該当キャストが見つからない場合は、このエイリアス（採用シート自身の
+  // 「合計」列。無ければ以下へフォールバック）で求めた値をそのまま使う
+  totalSales: ["合計", "総売上", "売上", "売上合計", "総売り上げ", "totalsales", "sales"],
   // 実ファイルは「総支給額」（=日当+バック合計）。差引給与（日払い控除後）や
   // 最終支給額（税・消費税調整後）とは別列のため、優先順位で明示する
   payment: ["支給額", "総支給額", "支給合計", "給料", "給与", "支給", "payment"],
   honshimeiCount: ["本指名", "本指名本数", "本指名数", "honshimei"],
   honshimeiGroupCount: ["本指名組数", "本指名組", "本指名(組)", "hongroup"],
   customerCount: ["顧客数", "客数", "customers"],
-  // 「場内」列は旧フォーマットでは場内指名の本数、shimeiSales（「指名」列）が
-  // 存在する新フォーマットでは場内売上の金額として使われる（実ファイルの構成差）
-  jounaiCount: ["場内売上", "場内", "場内指名", "jounai"],
+  jounaiCount: ["場内", "場内指名", "jounai"],
   douhan: ["同伴", "同伴組", "同伴数", "douhan"],
   workDays: ["出勤日数", "出勤数", "出勤", "workdays"],
   workHours: ["出勤時間", "労働時間", "勤務時間", "労時間", "workhours"],
@@ -783,17 +797,69 @@ function sheetNameScore(name: string): number {
 }
 
 /**
- * 売上ランキング等のtotalSalesの参照元シート名。このシートのみを対象とし、
- * 「一覧」等の他のシートは（スコアが高くても）一切参照しない。
- * スコアリングによる自動判定・別名へのフォールバックは行わない
- * （複数シートに紛らわしい「合計」列がある実ファイルで、誤ったシートの値を
- * 読んでしまう不具合が起きたため、判定を単純な名前一致のみにした）
+ * 売上（totalSales）専用の参照元シート名。行データ本体（名前・時給・本指名・
+ * 場内・同伴・支給額等）は従来通り採用シート（スコアリングで決定）から読むが、
+ * totalSalesの値だけは、この名前のシートがあればその「合計」列を氏名一致で
+ * 取得し、採用シート自身の値を上書きする（findTotalSalesOverride参照）。
+ * 「一覧」等の他のシートに紛らわしい「合計」列があっても、totalSales以外の
+ * 項目には一切影響しない
  */
-const REQUIRED_SHEET_NAME = "キャスト実績";
+const TOTAL_SALES_SHEET_NAME = "キャスト実績";
 
-/** シート名が REQUIRED_SHEET_NAME を含むか（正規化後の部分一致） */
-function isRequiredSheetName(name: string): boolean {
-  return normText(name).includes(normText(REQUIRED_SHEET_NAME));
+/** シート名が TOTAL_SALES_SHEET_NAME を含むか（正規化後の部分一致） */
+function isTotalSalesSheetName(name: string): boolean {
+  return normText(name).includes(normText(TOTAL_SALES_SHEET_NAME));
+}
+
+export interface TotalSalesOverrideDebugSample {
+  rowNumber: number;
+  name: string;
+  totalSales: number;
+}
+
+export interface TotalSalesOverrideDebugInfo {
+  /** "override": 「キャスト実績」シートの「合計」列を採用 / "none": シートが無い等で採用シート自身の値のまま */
+  source: "override" | "none";
+  sheetName: string | null;
+  headerRowNumber: number | null;
+  columnNumber: number | null;
+  nameColumnNumber: number | null;
+  sample: TotalSalesOverrideDebugSample[];
+  reason: string;
+}
+
+interface TotalSalesOverrideCandidate {
+  sheetName: string;
+  headerRowNumber: number;
+  columnNumber: number;
+  nameColumnNumber: number;
+  map: Map<string, { totalSales: number; totalSalesCell: ExcelCellRef | null }>;
+}
+
+/**
+ * 「キャスト実績」という名前のシートがあれば、その「合計」列を氏名一致の
+ * 上書きデータとして使う。無ければ null（totalSalesは採用シート自身の
+ * 「合計」等の別名検出結果のまま＝従来通り）。
+ * 複数該当する場合は先に見つかったシートを使う
+ */
+function findTotalSalesOverride(scans: SheetScan[]): TotalSalesOverrideCandidate | null {
+  const scan = scans.find((s) => isTotalSalesSheetName(s.name) && s.header !== null);
+  if (!scan || !scan.header) return null;
+  const nameIdx = scan.header.colIndex.name;
+  const totalIdx = scan.header.colIndex.totalSales;
+  if (nameIdx === undefined || totalIdx === undefined) return null;
+
+  const map = new Map<string, { totalSales: number; totalSalesCell: ExcelCellRef | null }>();
+  for (const row of scan.rows) {
+    map.set(normText(row.name), { totalSales: row.totalSales, totalSalesCell: row.totalSalesCell ?? null });
+  }
+  return {
+    sheetName: scan.name,
+    headerRowNumber: scan.header.headerRowIdx + 1,
+    columnNumber: totalIdx + 1,
+    nameColumnNumber: nameIdx + 1,
+    map,
+  };
 }
 
 /** Excelバイナリをワークブックとして読み込む（シート解析段階） */
@@ -844,29 +910,30 @@ export function assembleParseResult(
   opts?: { sheetName?: string }
 ): ExcelParseResult {
   // ---- 採用シートの決定 ----
-  // 自動判定（スコアリング）は行わない。「キャスト実績」という名前のシートのみを
-  // 対象とし、他のシート（「一覧」等にどれだけ紛らわしい「合計」列があっても）は
-  // 一切参照しない。opts.sheetNameによる手動選択（UI操作）のみ例外的に優先する
+  // 行データ本体（名前・時給・本指名・場内・同伴・支給額等）はここのスコアリングで
+  // 決定する採用シートから読む（従来通り）。totalSalesの値だけは、この後
+  // findTotalSalesOverviewで「キャスト実績」シートの「合計」列があれば上書きする
   let adopted: SheetScan | undefined;
   if (opts?.sheetName) {
     adopted = scans.find((s) => s.name === opts.sheetName);
     if (!adopted) throw new Error(`シート「${opts.sheetName}」が見つかりません`);
   } else {
-    adopted = scans.find((s) => isRequiredSheetName(s.name));
+    adopted = scans
+      .filter((s) => s.header !== null && s.rows.length > 0)
+      .sort((a, b) => b.score - a.score)[0];
     if (!adopted) {
+      // ヘッダー+データを検出できたシートが1つも無い
       const sheetList = sheetNames.join(" / ");
       throw new Error(
-        `「${REQUIRED_SHEET_NAME}」という名前のシートが見つかりません。売上ランキング・キャスト詳細の` +
-          `売上（totalSales）は必ず「${REQUIRED_SHEET_NAME}」シートの「合計」列から読み込む仕様のため、` +
-          `他のシートは自動的には使用しません。シート: ${sheetList}。シート名をご確認いただくか、` +
-          `シートを手動選択してください。`
+        `給料明細のヘッダー行（「源氏名」または「名前」+ 時給・総売上等の列）を検出できるシートがありません。` +
+          `シート: ${sheetList}。正しいシートか、ヘッダー行の列名をご確認ください。`
       );
     }
   }
 
   if (!adopted.header) {
     throw new Error(
-      `シート「${adopted.name}」ではヘッダー行（名前列 + 時給・合計等2列以上）を検出できませんでした。別のシートを選択してください。`
+      `シート「${adopted.name}」ではヘッダー行（名前列 + 時給・総売上等2列以上）を検出できませんでした。別のシートを選択してください。`
     );
   }
 
@@ -876,14 +943,12 @@ export function assembleParseResult(
     adopted: s === adopted,
     reason:
       (s === adopted
-        ? `給料明細シートとして採用（「${REQUIRED_SHEET_NAME}」）`
-        : !isRequiredSheetName(s.name)
-          ? `「${REQUIRED_SHEET_NAME}」という名前ではないため除外`
-          : s.header === null
-            ? "ヘッダー行を検出できないため除外（設定・集計シートの可能性）"
-            : s.rows.length === 0
-              ? "有効なキャスト行が無いため除外"
-              : "採用シートと同名の別シート（除外）") +
+        ? "給料明細シートとして採用"
+        : s.header === null
+          ? "ヘッダー行を検出できないため除外（設定・集計シートの可能性）"
+          : s.rows.length === 0
+            ? "有効なキャスト行が無いため除外"
+            : "採用シートよりスコアが低いため除外") +
       (s.truncated
         ? `（データ量が上限（${ABSOLUTE_MAX_ROWS}行×${ABSOLUTE_MAX_COLS}列）を超えるため一部のみ読み込み）`
         : ""),
@@ -920,15 +985,6 @@ export function assembleParseResult(
       `${errorSkippedCount}件の行が数式エラー（#REF!等）のため読み込めませんでした。除外行の詳細をご確認ください。`
     );
   }
-  // 採用シート（「キャスト実績」）に「合計」列そのものが無い場合、totalSalesは
-  // 別名へフォールバックせず全行0になる。売上が正しく読めていない兆候のため警告する
-  if (adopted.header.colIndex.totalSales === undefined) {
-    warnings.push(
-      `「${adopted.name}」シートに「合計」列が見つかりません。totalSalesは0として保存されます。` +
-        `見出しが「合計」という文字列になっているかご確認ください（フォールバックは行いません）。`
-    );
-  }
-
   const headerCells = (adopted.grid[adopted.header.headerRowIdx] ?? []).map((v) => String(v ?? ""));
   const headerMap: Record<string, string> = {};
   (Object.entries(adopted.header.colIndex) as Array<[string, number]>).forEach(([field, idx]) => {
@@ -996,27 +1052,64 @@ export function assembleParseResult(
     }
   }
 
-  // 【デバッグログ・段階1: Excel読み込み】採用シート名・セル位置・取得値を
-  // 行ごとに出力する。totalSalesは常に採用シートの「合計」列（headerMap.totalSales）
-  // の実値そのものであり、指名・場内はあくまで内訳の参考値（このログでのみ突合に使う）。
-  // どのシートのどのセルから読んでいるかを追跡できるよう、採用シート確定後の
-  // この1箇所からのみ出力する（scanSheetの走査段階では出力しない）。
+  // ---- totalSalesの上書き（「キャスト実績」シートの「合計」列を氏名一致で採用） ----
+  // 行データ本体（名前・時給・本指名・場内・同伴・支給額等）は採用シートのまま
+  // 変更しない。totalSalesだけを、存在すれば「キャスト実績」シートの「合計」列の
+  // 実値に置き換える（見つからない場合は採用シート自身の値のまま＝従来通り）
+  const totalSalesOverride = findTotalSalesOverride(scans);
+  let totalSalesOverrideDebug: TotalSalesOverrideDebugInfo;
+  if (totalSalesOverride) {
+    rows = rows.map((row) => {
+      const match = totalSalesOverride.map.get(normText(row.name));
+      if (!match) return { ...row, totalSalesSheetName: adopted.name };
+      return {
+        ...row,
+        totalSales: match.totalSales,
+        totalSalesCell: match.totalSalesCell,
+        totalSalesSheetName: totalSalesOverride.sheetName,
+      };
+    });
+    totalSalesOverrideDebug = {
+      source: "override",
+      sheetName: totalSalesOverride.sheetName,
+      headerRowNumber: totalSalesOverride.headerRowNumber,
+      columnNumber: totalSalesOverride.columnNumber,
+      nameColumnNumber: totalSalesOverride.nameColumnNumber,
+      sample: rows.slice(0, 5).map((r) => ({ rowNumber: r.rowNumber, name: r.name, totalSales: r.totalSales })),
+      reason:
+        `「${totalSalesOverride.sheetName}」シートの${totalSalesOverride.columnNumber}列目（「合計」列）を` +
+        `氏名一致でtotalSalesに採用（行データ本体は採用シート「${adopted.name}」のまま）`,
+    };
+  } else {
+    rows = rows.map((row) => ({ ...row, totalSalesSheetName: adopted.name }));
+    totalSalesOverrideDebug = {
+      source: "none",
+      sheetName: null,
+      headerRowNumber: null,
+      columnNumber: null,
+      nameColumnNumber: null,
+      sample: [],
+      reason: `「${TOTAL_SALES_SHEET_NAME}」という名前のシートが見つからないため、採用シート「${adopted.name}」自身のtotalSales列（${headerMap.totalSales ?? "検出なし"}）をそのまま使用`,
+    };
+  }
+
+  // 【デバッグログ・段階1: Excel読み込み】シート名・セル位置・取得値を行ごとに
+  // 出力する。totalSalesSheetNameが採用シート（rowDataSheetName）と異なる場合、
+  // その行のtotalSalesは「キャスト実績」シートの「合計」列由来（上書き適用）。
   // 本番・プレビューではConsoleを汚さないよう抑止する
   if (DEBUG_LOG_ENABLED) {
     for (const r of rows) {
       // eslint-disable-next-line no-console
       console.info("[parseMonthlyExcel:row]", {
-        sheetName: adopted.name,
-        isRequiredSheet: isRequiredSheetName(adopted.name),
+        rowDataSheetName: adopted.name,
+        totalSalesSheetName: r.totalSalesSheetName,
+        totalSalesOverridden: r.totalSalesSheetName !== adopted.name,
         rowNumber: r.rowNumber,
         name: r.name,
         shimeiSales: headerMap.shimeiSales ? r.shimeiSales : null,
-        shimeiSalesColumnLabel: headerMap.shimeiSales ?? null,
         shimeiSalesCell: r.shimeiSalesCell?.address ?? null,
         jounaiCount: headerMap.jounaiCount ? r.jounaiCount : null,
-        jounaiCountColumnLabel: headerMap.jounaiCount ?? null,
         jounaiCountCell: r.jounaiCountCell?.address ?? null,
-        totalSalesColumnLabel: headerMap.totalSales ?? null,
         totalSalesCell: r.totalSalesCell?.address ?? null,
         totalSales: r.totalSales,
       });
@@ -1028,6 +1121,7 @@ export function assembleParseResult(
     excluded: adopted.excluded,
     headerMap,
     sheetName: adopted.name,
+    totalSalesOverrideDebug,
     headerRowNumber: adopted.header.headerRowIdx + 1,
     dataStartRow: adopted.dataStartRow,
     dataEndRow: adopted.dataEndRow,

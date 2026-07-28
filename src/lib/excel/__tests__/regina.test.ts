@@ -6,8 +6,8 @@ import { parseMonthlyExcel, readWorkbook, scanSheet } from "@/lib/excel/parseMon
  * REGINA店舗の実給料明細ファイル「2026年6月 キャスト給料明細.xlsx」の調査で
  * 判明した2点を再現するテスト。
  *
- * 1. 「キャスト実績」シートの実際の列構成（源氏名B列/時給C列/出勤数G列/労働時間H列/
- *    同伴組J列/本指名M列/場内O列/総支給額V列/合計AA列）は既存の見出し名
+ * 1. 「一覧」シートの実際の列構成（源氏名B列/時給C列/出勤数G列/労働時間H列/
+ *    同伴組J列/本指名M列/場内O列/総支給額V列/総売上AA列）は既存の見出し名
  *    ベースの汎用ロジックで正しく解析できる（VIRGO専用のロジックではない）
  * 2. 個別キャストシートの1枚（実ファイルでは「にこ」）のシート範囲（!ref）が
  *    Excelの書式設定等の副作用で約104万行に膨れ上がっており、これが
@@ -28,10 +28,10 @@ function makeWorkbook(sheets: Record<string, unknown[][]>): ArrayBuffer {
 }
 
 /**
- * REGINA実ファイルの「キャスト実績」シートの実列構成を再現（列位置は実ファイル調査で確認済み）。
+ * REGINA実ファイルの「一覧」シートの実列構成を再現（列位置は実ファイル調査で確認済み）。
  * A列は空、B列=源氏名、C列=時給、D〜F列は歩合関連、G列=出勤数、H列=労働時間、
  * I列=日当、J列=同伴組、K〜U列はバック関連、V列=総支給額、W〜Z列は日払い等、
- * AA列=合計。
+ * AA列=総売上（実ファイルでは「合計」相当の列）。
  */
 function reginaIchiranRows(): unknown[][] {
   const header = new Array(27).fill("");
@@ -43,7 +43,7 @@ function reginaIchiranRows(): unknown[][] {
   header[12] = "本指名";
   header[14] = "場内";
   header[21] = "総支給額";
-  header[26] = "合計";
+  header[26] = "総売上";
 
   function row(name: string, wage: number, days: number, hours: number, douhan: number, honmei: number, jounai: number, payment: number, sales: number): unknown[] {
     const r = new Array(27).fill("");
@@ -67,11 +67,11 @@ function reginaIchiranRows(): unknown[][] {
   ];
 }
 
-describe("parseMonthlyExcel: REGINA「キャスト実績」シートの実列構成", () => {
+describe("parseMonthlyExcel: REGINA「一覧」シートの実列構成", () => {
   it("VIRGO専用ロジックではなく見出し名ベースの汎用ロジックで正しく解析できる", () => {
-    const buf = makeWorkbook({ キャスト実績: reginaIchiranRows() });
+    const buf = makeWorkbook({ 一覧: reginaIchiranRows() });
     const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
+    expect(result.sheetName).toBe("一覧");
     expect(result.headerMap).toMatchObject({
       name: "源氏名",
       hourlyWage: "時給",
@@ -81,7 +81,7 @@ describe("parseMonthlyExcel: REGINA「キャスト実績」シートの実列構
       honshimeiCount: "本指名",
       jounaiCount: "場内",
       payment: "総支給額",
-      totalSales: "合計",
+      totalSales: "総売上",
     });
     const seira = result.rows.find((r) => r.name === "せいら")!;
     expect(seira.hourlyWage).toBe(15000);
@@ -137,7 +137,7 @@ describe("parseMonthlyExcel: 宣言範囲(!ref)だけが異常に大きいシー
    */
   function makeBloatedRefWorkbookBuffer(bloatedRows: number): ArrayBuffer {
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(reginaIchiranRows()), "キャスト実績");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(reginaIchiranRows()), "一覧");
     XLSX.utils.book_append_sheet(wb, makeBloatedNikoSheet(bloatedRows), "にこ");
     return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
   }
@@ -145,7 +145,7 @@ describe("parseMonthlyExcel: 宣言範囲(!ref)だけが異常に大きいシー
   it("正常範囲のシートは影響を受けない", () => {
     const buf = makeBloatedRefWorkbookBuffer(5000);
     const wb = readWorkbook(buf);
-    const scan = scanSheet(wb, "キャスト実績");
+    const scan = scanSheet(wb, "一覧");
     expect(scan.truncated).toBe(false);
   });
 
@@ -154,7 +154,7 @@ describe("parseMonthlyExcel: 宣言範囲(!ref)だけが異常に大きいシー
     const t0 = Date.now();
     const result = parseMonthlyExcel(buf);
     expect(Date.now() - t0).toBeLessThan(3000);
-    expect(result.sheetName).toBe("キャスト実績");
+    expect(result.sheetName).toBe("一覧");
     expect(result.rows.map((r) => r.name)).toEqual(["せいら", "ももか"]);
     // 宣言範囲の膨張だけでは警告を出さない（実データは失われていないため）
     expect(result.warnings).toEqual([]);
@@ -172,18 +172,18 @@ describe("parseMonthlyExcel: 実データ自体が絶対上限を超える場合
     const ichiran = XLSX.utils.aoa_to_sheet(reginaIchiranRows());
     // 絶対上限（20000行）を超える位置に実際の値を1つ置く
     XLSX.utils.sheet_add_aoa(ichiran, [["はぐれ値"]], { origin: "A25000" });
-    XLSX.utils.book_append_sheet(wb, ichiran, "キャスト実績");
+    XLSX.utils.book_append_sheet(wb, ichiran, "一覧");
     return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
   }
 
   it("絶対上限を超える実データがある場合はtruncatedになり、警告とシート情報に理由が表示される", () => {
     const buf = makeGenuinelyLargeWorkbook();
     const result = parseMonthlyExcel(buf);
-    expect(result.sheetName).toBe("キャスト実績");
+    expect(result.sheetName).toBe("一覧");
     // 通常のキャスト行は失われていない
     expect(result.rows.map((r) => r.name)).toEqual(["せいら", "ももか"]);
     expect(result.warnings.some((w) => w.includes("上限") && w.includes("行"))).toBe(true);
-    const sheetInfo = result.sheets.find((s) => s.name === "キャスト実績");
+    const sheetInfo = result.sheets.find((s) => s.name === "一覧");
     expect(sheetInfo?.reason).toContain("上限");
   });
 });
@@ -191,11 +191,11 @@ describe("parseMonthlyExcel: 実データ自体が絶対上限を超える場合
 describe("parseMonthlyExcel: 数式エラー値（#REF!等）への対応", () => {
   it("数式エラー値を含む行は理由付きで除外し、黙って0扱いにしない", () => {
     const rows: unknown[][] = [
-      ["源氏名", "時給", "出勤日数", "合計", "支給額"],
+      ["源氏名", "時給", "出勤日数", "総売上", "支給額"],
       ["あいり", 5000, 20, 1500000, 520000],
       ["こわれ", 5000, 20, "#REF!", 520000], // 他シート参照が壊れているケース
     ];
-    const buf = makeWorkbook({ キャスト実績: rows });
+    const buf = makeWorkbook({ 給料明細: rows });
     const result = parseMonthlyExcel(buf);
     expect(result.rows.map((r) => r.name)).toEqual(["あいり"]);
     const excludedRow = result.excluded.find((e) => e.value === "こわれ");
@@ -215,11 +215,10 @@ describe("readWorkbook: 壊れたファイル・非Excelファイルのエラー
     expect(() => readWorkbook(corrupted)).toThrow(/ファイル形式/);
   });
 
-  it("Excel形式と解釈できないテキストは、後段の「キャスト実績」シート未検出エラーとして具体的に報告される", () => {
+  it("Excel形式と解釈できないテキストは、後段の見出し検出エラーとして具体的に報告される", () => {
     // SheetJSはプレーンテキストもCSV相当として寛容に読み込むため、この場合は
-    // readWorkbook自体は例外を投げないが、後段で「キャスト実績」シートが
-    // 見つからないエラーとして明確に報告される
+    // readWorkbook自体は例外を投げないが、後段でヘッダー未検出として明確に報告される
     const notExcel = new TextEncoder().encode("これはExcelファイルではありません").buffer;
-    expect(() => parseMonthlyExcel(notExcel as ArrayBuffer)).toThrow(/キャスト実績/);
+    expect(() => parseMonthlyExcel(notExcel as ArrayBuffer)).toThrow(/ヘッダー行/);
   });
 });
