@@ -228,8 +228,7 @@ describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの�
     expect(seika.jounaiCount).toBe(4); // 場内本数
     expect(seika.douhan).toBe(2); // 同伴
     expect(seika.payment).toBe(900000); // 支給額（給料）
-    expect(result.totalSalesOverrideDebug.source).toBe("override");
-    expect(result.totalSalesOverrideDebug.sheetName).toBe("キャスト実績");
+    expect(seika.totalSalesSheetName).toBe("キャスト実績");
   });
 
   it("「キャスト実績」シートが無い場合は、採用シート自身のtotalSales列がそのまま使われる（完全に従来通り）", () => {
@@ -238,7 +237,7 @@ describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの�
     expect(result.sheetName).toBe("一覧");
     const seika = result.rows.find((r) => r.name === "せいか")!;
     expect(seika.totalSales).toBe(515843); // 「キャスト実績」シートが無いのでそのまま
-    expect(result.totalSalesOverrideDebug.source).toBe("none");
+    expect(seika.totalSalesSheetName).toBe("一覧");
   });
 
   it("「キャスト実績」シートはあるが該当キャストが見つからない場合、そのキャストのtotalSalesは採用シート自身の値のまま", () => {
@@ -262,81 +261,39 @@ describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの�
     expect(seika.totalSales).toBe(5893600);
   });
 
-  describe("総売上トレース・シート診断（調査用デバッグ表示のデータ）", () => {
-    it("上書きが成功した場合、トレースにキャスト実績/一覧それぞれの取得値と採用理由が記録される", () => {
-      const buf = makeWorkbook({ 一覧: ichiranRows(), キャスト実績: castJissekiRows() });
-      const result = parseMonthlyExcel(buf);
-      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
-      expect(trace.castPerformanceValue).toBe(5893600);
-      expect(trace.castPerformanceSheet).toBe("キャスト実績");
-      expect(trace.listValue).toBe(515843);
-      expect(trace.listSheet).toBe("一覧");
-      expect(trace.selectedValue).toBe(5893600);
-      expect(trace.selectedSheet).toBe("キャスト実績");
-      expect(trace.selectedColumn).toBe("合計");
-      expect(trace.fallbackOccurred).toBe(false);
-      expect(trace.reason).toContain("キャスト実績");
-
-      const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
-      expect(diag.matchesCastPerformanceSheetName).toBe(true);
-      expect(diag.headerDetected).toBe(true);
-      expect(diag.nameColumnDetected).toBe(true);
-      expect(diag.totalSalesColumnDetected).toBe(true);
+  it("「キャスト実績」という名前のシートはあるが「合計」列を検出できない場合、上書きされず採用シート自身の値のまま", () => {
+    const buf = makeWorkbook({
+      一覧: ichiranRows(),
+      キャスト実績: [
+        // 「時給」「出勤日数」の2列で既知列数の要件（2列以上）を満たしヘッダー検出は
+        // 成功させつつ、総売上に相当する列名だけをどのエイリアスにも一致しないものにする
+        ["源氏名", "時給", "出勤日数", "総売上高"],
+        ["せいか", 5000, 20, 999999],
+      ],
     });
+    const result = parseMonthlyExcel(buf);
+    const seika = result.rows.find((r) => r.name === "せいか")!;
+    expect(seika.totalSales).toBe(515843); // 一覧のまま
+    expect(seika.totalSalesSheetName).toBe("一覧");
+  });
 
-    it("「キャスト実績」シートが無い場合、トレースはフォールバックを明示し、シート診断は「見つからない」ことを示す", () => {
-      const buf = makeWorkbook({ 一覧: ichiranRows() });
-      const result = parseMonthlyExcel(buf);
-      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
-      expect(trace.castPerformanceValue).toBeNull();
-      expect(trace.listValue).toBe(515843);
-      expect(trace.selectedValue).toBe(515843);
-      expect(trace.selectedSheet).toBe("一覧");
-      expect(trace.fallbackOccurred).toBe(true);
-      expect(trace.reason).toContain("見つかりません");
-
-      expect(result.totalSalesSheetDiagnostics.some((d) => d.matchesCastPerformanceSheetName)).toBe(false);
+  it("氏名の全角半角・空白の違いを吸収して氏名一致する（normText正規化）", () => {
+    const buf = makeWorkbook({
+      一覧: [
+        ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"],
+        ["せいか　", 5000, 22, 110, 12, 4, 2, 515843, 900000, ""], // 全角スペース付き
+      ],
+      キャスト実績: [
+        ["源氏名", "時給", "合計"],
+        ["ｾｲｶ", 5000, 5893600], // 半角カナ表記
+      ],
     });
-
-    it("「キャスト実績」という名前のシートはあるが「合計」列を検出できない場合、その旨がシート診断・トレースの理由に現れる", () => {
-      const buf = makeWorkbook({
-        一覧: ichiranRows(),
-        キャスト実績: [
-          // 「時給」「出勤日数」の2列で既知列数の要件（2列以上）を満たしヘッダー検出は
-          // 成功させつつ、総売上に相当する列名だけをどのエイリアスにも一致しないものにする
-          ["源氏名", "時給", "出勤日数", "総売上高"],
-          ["せいか", 5000, 20, 999999],
-        ],
-      });
-      const result = parseMonthlyExcel(buf);
-      const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
-      expect(diag.matchesCastPerformanceSheetName).toBe(true);
-      expect(diag.nameColumnDetected).toBe(true);
-      expect(diag.totalSalesColumnDetected).toBe(false);
-
-      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
-      expect(trace.selectedValue).toBe(515843); // 一覧のまま
-      expect(trace.reason).toContain("総売上列を検出できません");
-    });
-
-    it("氏名の全角半角・空白の違いを吸収して氏名一致する（normText正規化）", () => {
-      const buf = makeWorkbook({
-        一覧: [
-          ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"],
-          ["せいか　", 5000, 22, 110, 12, 4, 2, 515843, 900000, ""], // 全角スペース付き
-        ],
-        キャスト実績: [
-          ["源氏名", "時給", "合計"],
-          ["ｾｲｶ", 5000, 5893600], // 半角カナ表記
-        ],
-      });
-      const result = parseMonthlyExcel(buf);
-      // 正規化後の文字列が一致しないため、この場合は氏名一致せずフォールバックする
-      // （半角カナ→全角ひらがな変換まではnormTextで行わないため、意図的な非一致ケース）
-      const trace = result.totalSalesTrace[0];
-      expect(trace.selectedValue).toBe(515843);
-      expect(trace.fallbackOccurred).toBe(true);
-    });
+    const result = parseMonthlyExcel(buf);
+    // 正規化後の文字列が一致しないため、この場合は氏名一致せずフォールバックする
+    // （半角カナ→全角ひらがな変換まではnormTextで行わないため、意図的な非一致ケース）
+    const row = result.rows[0];
+    expect(row.totalSales).toBe(515843);
+    expect(row.totalSalesSheetName).toBe("一覧");
   });
 });
 
@@ -381,14 +338,31 @@ describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル氏
     return [header, ...names.map((n, i) => [n, 5000, 20, 100, 5, 2, 1, 111111 + i, 400000, ""])];
   }
 
-  it("結合セルの名前列でも「キャスト実績」シートの有効行が実際のキャスト人数分になる", () => {
+  it("結合セルの名前列でも「キャスト実績」シートの全キャスト分が総売上に反映される（有効行が1件しか検出されない不具合が起きていない）", () => {
+    // 有効行が1件しか検出されない不具合が起きていれば、キャスト実績シート上の
+    // 大半のキャストは氏名一致せず、一覧シートの無関係な値（111111+i）に
+    // フォールバックしてしまう。全員が一致することで実際の8名分が
+    // 検出できていることを確認する
     const buf = makeWorkbookWithMerges({
       一覧: { rows: ichiranRowsForManyCasts() },
       キャスト実績: { rows: castJissekiRowsWithMergedNameHeader(), merges: castJissekiMerges },
     });
     const result = parseMonthlyExcel(buf);
-    const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
-    expect(diag.validRowCount).toBe(8); // 1件ではなく実際の8名分
+    const expected: Record<string, number> = {
+      えま: 225221,
+      まな: 56072,
+      りの: 0,
+      りな: 120000,
+      みく: 98000,
+      みお: 76000,
+      みなみ: 65000,
+      みほ: 54000,
+    };
+    for (const [name, expectedSales] of Object.entries(expected)) {
+      const row = result.rows.find((r) => r.name === name)!;
+      expect(row.totalSales, `${name}の総売上`).toBe(expectedSales);
+      expect(row.totalSalesSheetName, `${name}の採用元シート`).toBe("キャスト実績");
+    }
   });
 
   it("えま・まな・りの（0円）がキャスト実績シートの売上を採用し、fallbackが発生しない", () => {
@@ -398,28 +372,23 @@ describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル氏
     });
     const result = parseMonthlyExcel(buf);
 
-    const ema = result.totalSalesTrace.find((t) => t.castName === "えま")!;
-    expect(ema.selectedValue).toBe(225221);
-    expect(ema.selectedSheet).toBe("キャスト実績");
-    expect(ema.castPerformanceValue).toBe(225221);
-    expect(ema.fallbackOccurred).toBe(false);
+    const ema = result.rows.find((r) => r.name === "えま")!;
+    expect(ema.totalSales).toBe(225221);
+    expect(ema.totalSalesSheetName).toBe("キャスト実績");
 
-    const mana = result.totalSalesTrace.find((t) => t.castName === "まな")!;
-    expect(mana.selectedValue).toBe(56072);
-    expect(mana.selectedSheet).toBe("キャスト実績");
-    expect(mana.fallbackOccurred).toBe(false);
+    const mana = result.rows.find((r) => r.name === "まな")!;
+    expect(mana.totalSales).toBe(56072);
+    expect(mana.totalSalesSheetName).toBe("キャスト実績");
 
     // 売上0円のキャストも氏名一致として扱われ、フォールバックしない
-    const rino = result.totalSalesTrace.find((t) => t.castName === "りの")!;
-    expect(rino.selectedValue).toBe(0);
-    expect(rino.selectedSheet).toBe("キャスト実績");
-    expect(rino.castPerformanceValue).toBe(0);
-    expect(rino.fallbackOccurred).toBe(false);
+    const rino = result.rows.find((r) => r.name === "りの")!;
+    expect(rino.totalSales).toBe(0);
+    expect(rino.totalSalesSheetName).toBe("キャスト実績");
 
     // 残りのキャストも全員フォールバックしない
     for (const name of ["りな", "みく", "みお", "みなみ", "みほ"]) {
-      const t = result.totalSalesTrace.find((tr) => tr.castName === name)!;
-      expect(t.fallbackOccurred, `${name}がフォールバックしないはず`).toBe(false);
+      const row = result.rows.find((r) => r.name === name)!;
+      expect(row.totalSalesSheetName, `${name}がフォールバックしないはず`).toBe("キャスト実績");
     }
   });
 
@@ -479,43 +448,27 @@ describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル総
     });
     const result = parseMonthlyExcel(buf);
 
-    const ema = result.totalSalesTrace.find((t) => t.castName === "えま")!;
-    expect(ema.selectedValue).toBe(3083100); // K列「合計」
-    expect(ema.selectedValue).not.toBe(2910800); // I列「本指名売上」は採用しない
-    expect(ema.selectedSheet).toBe("キャスト実績");
-    expect(ema.selectedCell).toMatch(/^K\d+$/); // I列ではなくK列のセル
-    expect(ema.fallbackOccurred).toBe(false);
+    const ema = result.rows.find((r) => r.name === "えま")!;
+    expect(ema.totalSales).toBe(3083100); // K列「合計」
+    expect(ema.totalSales).not.toBe(2910800); // I列「本指名売上」は採用しない
+    expect(ema.totalSalesSheetName).toBe("キャスト実績");
+    expect(ema.totalSalesCell?.address).toMatch(/^K\d+$/); // I列ではなくK列のセル
 
-    const mana = result.totalSalesTrace.find((t) => t.castName === "まな")!;
-    expect(mana.selectedValue).toBe(1195500);
-    expect(mana.selectedValue).not.toBe(1166500);
-    expect(mana.selectedCell).toMatch(/^K\d+$/);
-    expect(mana.fallbackOccurred).toBe(false);
+    const mana = result.rows.find((r) => r.name === "まな")!;
+    expect(mana.totalSales).toBe(1195500);
+    expect(mana.totalSales).not.toBe(1166500);
+    expect(mana.totalSalesCell?.address).toMatch(/^K\d+$/);
 
-    const rio = result.totalSalesTrace.find((t) => t.castName === "りお")!;
-    expect(rio.selectedValue).toBe(662200);
-    expect(rio.selectedValue).not.toBe(444500);
-    expect(rio.selectedCell).toMatch(/^K\d+$/);
-    expect(rio.fallbackOccurred).toBe(false);
+    const rio = result.rows.find((r) => r.name === "りお")!;
+    expect(rio.totalSales).toBe(662200);
+    expect(rio.totalSales).not.toBe(444500);
+    expect(rio.totalSalesCell?.address).toMatch(/^K\d+$/);
 
     // 0円のキャストも、I列ではなくK列を採用する（値が偶然同じでも、参照先セルで確認する）
-    const rino = result.totalSalesTrace.find((t) => t.castName === "りの")!;
-    expect(rino.selectedValue).toBe(0);
-    expect(rino.selectedSheet).toBe("キャスト実績");
-    expect(rino.selectedCell).toMatch(/^K\d+$/);
-    expect(rino.fallbackOccurred).toBe(false);
-  });
-
-  it("診断表示の合計列ラベルも、結合セル補正後の実際の列見出し「合計」を示す", () => {
-    const buf = makeWorkbookWithMerges({
-      一覧: { rows: ichiranRowsForTotalSalesMergedHeader() },
-      キャスト実績: { rows: castJissekiRowsWithMergedTotalHeader(), merges: castJissekiTotalMerges },
-    });
-    const result = parseMonthlyExcel(buf);
-    const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
-    expect(diag.totalSalesColumnDetected).toBe(true);
-    expect(diag.totalSalesColumnLabel).toBe("合計");
-    expect(diag.validRowCount).toBe(4);
+    const rino = result.rows.find((r) => r.name === "りの")!;
+    expect(rino.totalSales).toBe(0);
+    expect(rino.totalSalesSheetName).toBe("キャスト実績");
+    expect(rino.totalSalesCell?.address).toMatch(/^K\d+$/);
   });
 
   it("結合セル補正後も、行データ本体（本指名・場内・同伴・支給額）は引き続き「一覧」シートから読む", () => {
