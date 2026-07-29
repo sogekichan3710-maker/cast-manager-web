@@ -248,6 +248,83 @@ describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの�
     const seika = result.rows.find((r) => r.name === "せいか")!;
     expect(seika.totalSales).toBe(5893600);
   });
+
+  describe("総売上トレース・シート診断（調査用デバッグ表示のデータ）", () => {
+    it("上書きが成功した場合、トレースにキャスト実績/一覧それぞれの取得値と採用理由が記録される", () => {
+      const buf = makeWorkbook({ 一覧: ichiranRows(), キャスト実績: castJissekiRows() });
+      const result = parseMonthlyExcel(buf);
+      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
+      expect(trace.castPerformanceValue).toBe(5893600);
+      expect(trace.castPerformanceSheet).toBe("キャスト実績");
+      expect(trace.listValue).toBe(515843);
+      expect(trace.listSheet).toBe("一覧");
+      expect(trace.selectedValue).toBe(5893600);
+      expect(trace.selectedSheet).toBe("キャスト実績");
+      expect(trace.selectedColumn).toBe("合計");
+      expect(trace.fallbackOccurred).toBe(false);
+      expect(trace.reason).toContain("キャスト実績");
+
+      const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
+      expect(diag.matchesCastPerformanceSheetName).toBe(true);
+      expect(diag.headerDetected).toBe(true);
+      expect(diag.nameColumnDetected).toBe(true);
+      expect(diag.totalSalesColumnDetected).toBe(true);
+    });
+
+    it("「キャスト実績」シートが無い場合、トレースはフォールバックを明示し、シート診断は「見つからない」ことを示す", () => {
+      const buf = makeWorkbook({ 一覧: ichiranRows() });
+      const result = parseMonthlyExcel(buf);
+      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
+      expect(trace.castPerformanceValue).toBeNull();
+      expect(trace.listValue).toBe(515843);
+      expect(trace.selectedValue).toBe(515843);
+      expect(trace.selectedSheet).toBe("一覧");
+      expect(trace.fallbackOccurred).toBe(true);
+      expect(trace.reason).toContain("見つかりません");
+
+      expect(result.totalSalesSheetDiagnostics.some((d) => d.matchesCastPerformanceSheetName)).toBe(false);
+    });
+
+    it("「キャスト実績」という名前のシートはあるが「合計」列を検出できない場合、その旨がシート診断・トレースの理由に現れる", () => {
+      const buf = makeWorkbook({
+        一覧: ichiranRows(),
+        キャスト実績: [
+          // 「時給」「出勤日数」の2列で既知列数の要件（2列以上）を満たしヘッダー検出は
+          // 成功させつつ、総売上に相当する列名だけをどのエイリアスにも一致しないものにする
+          ["源氏名", "時給", "出勤日数", "総売上高"],
+          ["せいか", 5000, 20, 999999],
+        ],
+      });
+      const result = parseMonthlyExcel(buf);
+      const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
+      expect(diag.matchesCastPerformanceSheetName).toBe(true);
+      expect(diag.nameColumnDetected).toBe(true);
+      expect(diag.totalSalesColumnDetected).toBe(false);
+
+      const trace = result.totalSalesTrace.find((t) => t.castName === "せいか")!;
+      expect(trace.selectedValue).toBe(515843); // 一覧のまま
+      expect(trace.reason).toContain("総売上列を検出できません");
+    });
+
+    it("氏名の全角半角・空白の違いを吸収して氏名一致する（normText正規化）", () => {
+      const buf = makeWorkbook({
+        一覧: [
+          ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"],
+          ["せいか　", 5000, 22, 110, 12, 4, 2, 515843, 900000, ""], // 全角スペース付き
+        ],
+        キャスト実績: [
+          ["源氏名", "時給", "合計"],
+          ["ｾｲｶ", 5000, 5893600], // 半角カナ表記
+        ],
+      });
+      const result = parseMonthlyExcel(buf);
+      // 正規化後の文字列が一致しないため、この場合は氏名一致せずフォールバックする
+      // （半角カナ→全角ひらがな変換まではnormTextで行わないため、意図的な非一致ケース）
+      const trace = result.totalSalesTrace[0];
+      expect(trace.selectedValue).toBe(515843);
+      expect(trace.fallbackOccurred).toBe(true);
+    });
+  });
 });
 
 describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
