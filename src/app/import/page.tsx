@@ -548,6 +548,8 @@ export default function ImportPage() {
                   </div>
                 </details>
               )}
+
+              <TotalSalesDebugPanel parseResult={parseResult} />
             </div>
           )}
 
@@ -1023,6 +1025,90 @@ function FinalConfirmModal({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 【一時的な調査用デバッグ表示】売上ランキングの金額不一致調査用。
+ * 「キャスト実績シートの総売上が一覧シートの値で上書きされているように見える」
+ * という報告を受け、推測ではなく実際にコードが判定した内容（採用元シート・
+ * 列・セル・キャスト実績/一覧それぞれの取得値・採用理由）をキャストごとに
+ * 表示する。原因調査が完了し次第、この表示は削除予定
+ */
+function TotalSalesDebugPanel({ parseResult }: { parseResult: ExcelParseResult }) {
+  const { totalSalesSheetDiagnostics, totalSalesTrace } = parseResult;
+  return (
+    <details style={{ marginTop: 8 }} open>
+      <summary>
+        【調査用】総売上トレース（キャスト実績 vs 一覧）
+        <span className="badge badge-yellow" style={{ marginLeft: 6 }}>一時的なデバッグ表示</span>
+      </summary>
+      <div className="page-sub" style={{ marginTop: 6 }}>
+        全体の判定: {parseResult.totalSalesOverrideDebug.reason}
+      </div>
+      <div className="table-wrap" style={{ marginTop: 8 }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>シート名</th>
+              <th>正規化後の名前</th>
+              <th>「キャスト実績」判定</th>
+              <th>ヘッダー検出</th>
+              <th>氏名列</th>
+              <th>合計列</th>
+              <th className="num">有効行</th>
+            </tr>
+          </thead>
+          <tbody>
+            {totalSalesSheetDiagnostics.map((d) => (
+              <tr key={d.name}>
+                <td>{d.name}</td>
+                <td style={{ wordBreak: "break-all" }}>{d.normalizedName}</td>
+                <td>{d.matchesCastPerformanceSheetName ? "一致" : "不一致"}</td>
+                <td>{d.headerDetected ? `${d.headerRowNumber}行目` : "検出できず"}</td>
+                <td>{d.nameColumnDetected ? d.nameColumnLabel : "検出できず"}</td>
+                <td>{d.totalSalesColumnDetected ? d.totalSalesColumnLabel : "検出できず"}</td>
+                <td className="num">{d.validRowCount}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="table-wrap" style={{ marginTop: 8 }}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>キャスト名</th>
+              <th className="num">最終総売上</th>
+              <th>採用元シート</th>
+              <th>採用元列</th>
+              <th>採用元セル</th>
+              <th className="num">キャスト実績取得値</th>
+              <th className="num">一覧取得値</th>
+              <th>採用理由</th>
+              <th>フォールバック</th>
+            </tr>
+          </thead>
+          <tbody>
+            {totalSalesTrace.map((t) => (
+              <tr key={t.rowNumber}>
+                <td>{t.castName}</td>
+                <td className="num">¥{t.selectedValue.toLocaleString()}</td>
+                <td>{t.selectedSheet}</td>
+                <td>{t.selectedColumn}</td>
+                <td>{t.selectedCell ?? "―"}</td>
+                <td className="num">
+                  {t.castPerformanceValue != null ? `¥${t.castPerformanceValue.toLocaleString()}` : "―"}
+                </td>
+                <td className="num">¥{t.listValue.toLocaleString()}</td>
+                <td>{t.reason}</td>
+                <td>{t.fallbackOccurred ? "発生" : "なし"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
   );
 }
 
