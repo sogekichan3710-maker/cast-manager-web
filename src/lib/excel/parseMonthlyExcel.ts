@@ -1027,8 +1027,8 @@ export function readWorkbook(buffer: ArrayBuffer): XLSX.WorkBook {
 export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
   const ws = wb.Sheets[name];
   const { grid, truncated, origin } = safeGridFromSheet(ws);
-  const header = detectHeader(grid);
-  if (!header) {
+  const rawHeader = detectHeader(grid);
+  if (!rawHeader) {
     return {
       name,
       header: null,
@@ -1041,6 +1041,23 @@ export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
       truncated,
     };
   }
+  // 名前列のヘッダーセルが結合セル（例: 「キャスト実績」シート等の「キャスト名」が
+  // 区分／No／氏名の3列にまたがる結合セル）の場合、素直にヘッダー文字列の位置
+  // （結合範囲の先頭列）を名前列とみなすと、大半の行で空欄になる列（区分列等）を
+  // 誤って名前列としてしまい、ほぼ全行が「名前が空欄」として除外され、5行連続
+  // 無効行で走査が打ち切られる（有効行が1件だけ検出される不具合の原因になる）。
+  // findScoutedBySupplementと同じ補正をここで行い、全ての利用箇所
+  // （採用シート選択・findTotalSalesOverride等）に一貫して適用する
+  const merges = (ws["!merges"] ?? []) as ReadonlyArray<{
+    s: { r: number; c: number };
+    e: { r: number; c: number };
+  }>;
+  // detectHeaderはnameColを検出できた場合のみ非nullを返すため、colIndex.nameは必ず設定済み
+  const resolvedNameCol = resolveMergedNameColumn(grid, merges, rawHeader.headerRowIdx, rawHeader.colIndex.name!);
+  const header: HeaderDetection =
+    resolvedNameCol === rawHeader.colIndex.name
+      ? rawHeader
+      : { ...rawHeader, colIndex: { ...rawHeader.colIndex, name: resolvedNameCol } };
   const extracted = extractRows(grid, header, { ws, origin });
   // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
   const score =
