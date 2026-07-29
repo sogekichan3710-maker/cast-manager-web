@@ -438,6 +438,101 @@ describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル氏
   });
 });
 
+describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル総売上列（本番で報告された不具合の再現）", () => {
+  /**
+   * 名前列の結合セル修正後、本番の診断表示で新たに判明した不具合の再現。
+   * 「キャスト実績」シートは、上段（ヘッダー行）に「合計」がI〜K列にまたがる
+   * 結合セル（グループ見出し）としてあり、その直下の行（下段）に個別の列見出し
+   * （I列=本指名売上／J列=場内売上／K列=合計）がある2段ヘッダー構造になっている。
+   *
+   * 従来は結合セルの先頭列（I列）をそのまま総売上列として採用していたため、
+   * 本来読むべきK列「合計」ではなく、I列「本指名売上」の値を総売上として
+   * 誤って取得していた（診断表示で「採用元セル：I32」「採用値：2,910,800円」
+   * として確認された不具合）。
+   */
+  function castJissekiRowsWithMergedTotalHeader(): unknown[][] {
+    return [
+      ["キャスト名", "", "", "時給", "", "", "", "", "合計", "", ""],
+      ["", "", "", "", "", "", "", "", "本指名売上", "場内売上", "合計"],
+      ["", 1, "えま", 5000, "", "", "", "", 2910800, 172300, 3083100],
+      ["", 2, "まな", 4800, "", "", "", "", 1166500, 29000, 1195500],
+      ["", 3, "りお", 5200, "", "", "", "", 444500, 217700, 662200],
+      ["", 4, "りの", 4500, "", "", "", "", 0, 0, 0], // 本指名売上・場内売上・合計いずれも0円
+    ];
+  }
+  const castJissekiTotalMerges: XLSX.Range[] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }, // 「キャスト名」（A〜C結合）
+    { s: { r: 0, c: 8 }, e: { r: 0, c: 10 } }, // 「合計」（I〜K結合、上段のグループ見出し）
+  ];
+
+  function ichiranRowsForTotalSalesMergedHeader(): unknown[][] {
+    const header = ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"];
+    const names = ["えま", "まな", "りお", "りの"];
+    // 「一覧」シート自身の「合計」列は、キャスト実績シートの本指名売上・合計いずれとも無関係な値にしてある
+    return [header, ...names.map((n, i) => [n, 5000, 20, 100, 5, 2, 1, 999999 + i, 400000, ""])];
+  }
+
+  it("上段の「合計」結合セルではなく、下段の実際の列見出し（K列「合計」）を総売上列として採用する", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForTotalSalesMergedHeader() },
+      キャスト実績: { rows: castJissekiRowsWithMergedTotalHeader(), merges: castJissekiTotalMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+
+    const ema = result.totalSalesTrace.find((t) => t.castName === "えま")!;
+    expect(ema.selectedValue).toBe(3083100); // K列「合計」
+    expect(ema.selectedValue).not.toBe(2910800); // I列「本指名売上」は採用しない
+    expect(ema.selectedSheet).toBe("キャスト実績");
+    expect(ema.selectedCell).toMatch(/^K\d+$/); // I列ではなくK列のセル
+    expect(ema.fallbackOccurred).toBe(false);
+
+    const mana = result.totalSalesTrace.find((t) => t.castName === "まな")!;
+    expect(mana.selectedValue).toBe(1195500);
+    expect(mana.selectedValue).not.toBe(1166500);
+    expect(mana.selectedCell).toMatch(/^K\d+$/);
+    expect(mana.fallbackOccurred).toBe(false);
+
+    const rio = result.totalSalesTrace.find((t) => t.castName === "りお")!;
+    expect(rio.selectedValue).toBe(662200);
+    expect(rio.selectedValue).not.toBe(444500);
+    expect(rio.selectedCell).toMatch(/^K\d+$/);
+    expect(rio.fallbackOccurred).toBe(false);
+
+    // 0円のキャストも、I列ではなくK列を採用する（値が偶然同じでも、参照先セルで確認する）
+    const rino = result.totalSalesTrace.find((t) => t.castName === "りの")!;
+    expect(rino.selectedValue).toBe(0);
+    expect(rino.selectedSheet).toBe("キャスト実績");
+    expect(rino.selectedCell).toMatch(/^K\d+$/);
+    expect(rino.fallbackOccurred).toBe(false);
+  });
+
+  it("診断表示の合計列ラベルも、結合セル補正後の実際の列見出し「合計」を示す", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForTotalSalesMergedHeader() },
+      キャスト実績: { rows: castJissekiRowsWithMergedTotalHeader(), merges: castJissekiTotalMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+    const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
+    expect(diag.totalSalesColumnDetected).toBe(true);
+    expect(diag.totalSalesColumnLabel).toBe("合計");
+    expect(diag.validRowCount).toBe(4);
+  });
+
+  it("結合セル補正後も、行データ本体（本指名・場内・同伴・支給額）は引き続き「一覧」シートから読む", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForTotalSalesMergedHeader() },
+      キャスト実績: { rows: castJissekiRowsWithMergedTotalHeader(), merges: castJissekiTotalMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("一覧");
+    const ema = result.rows.find((r) => r.name === "えま")!;
+    expect(ema.honshimeiCount).toBe(5);
+    expect(ema.jounaiCount).toBe(2);
+    expect(ema.douhan).toBe(1);
+    expect(ema.payment).toBe(400000);
+  });
+});
+
 describe("parseMonthlyExcel: キャスト行の抽出と除外", () => {
   it("キャスト名だけを検出し、集計・設定項目・数字だけの行は候補に出ない", () => {
     const result = parseMonthlyExcel(realFileLikeBuffer());
