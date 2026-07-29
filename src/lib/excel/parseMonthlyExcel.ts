@@ -721,6 +721,75 @@ function resolveMergedNameColumn(
   return viable[0].c;
 }
 
+/**
+ * 総売上列のヘッダーセルが、上段のグループ見出し（例:「合計」がI〜K列に
+ * またがる結合セル）になっている場合、結合範囲の先頭列をそのまま採用せず、
+ * 直下の行にある個別の列見出し（例: I列=本指名売上／J列=場内売上／K列=合計）を
+ * 確認し、totalSalesのエイリアスに一致する列を実際のデータ列として採用し直す。
+ *
+ * 名前列の結合セル補正（resolveMergedNameColumn）とは異なり、総売上列の
+ * 候補列（本指名売上・場内売上・合計等）はいずれも数値データのため、
+ * 「非空・非数値のセルが多い列」のようなデータ内容による判別はできない。
+ * そのため、結合範囲の直下（数行以内。空行を挟む場合を考慮）にある個別
+ * 見出しラベルをtotalSalesのエイリアスと突き合わせて判定する。
+ *
+ * 一致する見出しが結合範囲の直下に見つからない場合は、結合範囲の先頭列の
+ * まま（従来通り）とする。判定はこの結合範囲の列のみに限定されるため、
+ * ワークブック全体から「合計」という文字列を持つ別の列を誤って拾うことはない。
+ */
+function resolveMergedTotalSalesColumn(
+  grid: unknown[][],
+  merges: ReadonlyArray<{ s: { r: number; c: number }; e: { r: number; c: number } }>,
+  headerRowIdx: number,
+  initialCol: number
+): number {
+  const spanMerge = merges.find(
+    (m) =>
+      m.s.c <= initialCol &&
+      initialCol <= m.e.c &&
+      m.s.r <= headerRowIdx &&
+      headerRowIdx <= m.e.r &&
+      m.e.c > m.s.c
+  );
+  if (!spanMerge) return initialCol;
+
+  for (let r = headerRowIdx + 1; r <= Math.min(grid.length - 1, headerRowIdx + 3); r++) {
+    const subCells: string[] = [];
+    for (let c = spanMerge.s.c; c <= spanMerge.e.c; c++) {
+      subCells.push(normText(grid[r]?.[c]));
+    }
+    if (subCells.every((c) => c === "")) continue; // 空行はスキップして次の行を確認
+
+    for (const alias of COLUMN_ALIASES.totalSales) {
+      const a = normText(alias);
+      const idx = subCells.findIndex((c) => c === a);
+      if (idx >= 0) return spanMerge.s.c + idx;
+    }
+    break; // 見出しラベルらしき行は見つかったが一致が無ければ、それ以上下は見ない
+  }
+  return initialCol;
+}
+
+/**
+ * 診断表示用: 指定列の見出しラベルを取得する。
+ *
+ * 総売上列を下段の個別見出し行（resolveMergedTotalSalesColumn参照）から
+ * 解決した場合、ヘッダー行そのもの（上段のグループ見出し行）ではその列は
+ * 結合セルの非先頭列にあたり空欄になる。そのまま表示すると「合計列：（空欄）」
+ * のように誤解を招くため、直下数行以内にある実際のラベルも確認する。
+ * 表示専用処理であり、列の実データ抽出（resolveMergedTotalSalesColumn）には
+ * 影響しない。
+ */
+function findHeaderLabelForColumn(grid: unknown[][], headerRowIdx: number, colIdx: number): string {
+  const direct = String(grid[headerRowIdx]?.[colIdx] ?? "").trim();
+  if (direct) return direct;
+  for (let r = headerRowIdx + 1; r <= Math.min(grid.length - 1, headerRowIdx + 3); r++) {
+    const v = String(grid[r]?.[colIdx] ?? "").trim();
+    if (v) return v;
+  }
+  return "";
+}
+
 interface ScoutedBySupplementCandidate {
   sheetName: string;
   headerLabel: string;
@@ -914,7 +983,10 @@ function buildTotalSalesSheetDiagnostics(scans: SheetScan[]): TotalSalesSheetDia
       nameColumnDetected: nameIdx !== undefined,
       nameColumnLabel: nameIdx !== undefined ? (headerCells[nameIdx] ?? null) : null,
       totalSalesColumnDetected: totalIdx !== undefined,
-      totalSalesColumnLabel: totalIdx !== undefined ? (headerCells[totalIdx] ?? null) : null,
+      totalSalesColumnLabel:
+        totalIdx !== undefined
+          ? findHeaderLabelForColumn(s.grid, s.header!.headerRowIdx, totalIdx) || (headerCells[totalIdx] ?? null)
+          : null,
       validRowCount: s.rows.length,
     };
   });
@@ -1054,10 +1126,23 @@ export function scanSheet(wb: XLSX.WorkBook, name: string): SheetScan {
   }>;
   // detectHeaderはnameColを検出できた場合のみ非nullを返すため、colIndex.nameは必ず設定済み
   const resolvedNameCol = resolveMergedNameColumn(grid, merges, rawHeader.headerRowIdx, rawHeader.colIndex.name!);
+  // 総売上列のヘッダーセルも同様に、上段のグループ見出し（例:「合計」がI〜K列に
+  // またがる結合セル）になっている場合、結合範囲の先頭列（本指名売上等の別の値の
+  // 列）をそのまま総売上列としてしまう不具合があるため、resolveMergedTotalSalesColumn
+  // で下段の個別見出し（例: K列の「合計」）に補正する
+  const resolvedTotalSalesCol =
+    rawHeader.colIndex.totalSales !== undefined
+      ? resolveMergedTotalSalesColumn(grid, merges, rawHeader.headerRowIdx, rawHeader.colIndex.totalSales)
+      : undefined;
+  const colIndexOverrides: Partial<HeaderDetection["colIndex"]> = {};
+  if (resolvedNameCol !== rawHeader.colIndex.name) colIndexOverrides.name = resolvedNameCol;
+  if (resolvedTotalSalesCol !== undefined && resolvedTotalSalesCol !== rawHeader.colIndex.totalSales) {
+    colIndexOverrides.totalSales = resolvedTotalSalesCol;
+  }
   const header: HeaderDetection =
-    resolvedNameCol === rawHeader.colIndex.name
+    Object.keys(colIndexOverrides).length === 0
       ? rawHeader
-      : { ...rawHeader, colIndex: { ...rawHeader.colIndex, name: resolvedNameCol } };
+      : { ...rawHeader, colIndex: { ...rawHeader.colIndex, ...colIndexOverrides } };
   const extracted = extractRows(grid, header, { ws, origin });
   // スコア: シート名 + 既知列数×10 + 有効行数（最大50）
   const score =
