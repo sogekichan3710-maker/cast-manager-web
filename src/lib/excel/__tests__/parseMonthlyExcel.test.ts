@@ -62,6 +62,19 @@ function makeWorkbook(sheets: Record<string, unknown[][]>): ArrayBuffer {
   return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
 }
 
+/** 結合セル（!merges）付きのシートを作れるワークブックビルダー（merges省略可） */
+function makeWorkbookWithMerges(
+  sheets: Record<string, { rows: unknown[][]; merges?: XLSX.Range[] }>
+): ArrayBuffer {
+  const wb = XLSX.utils.book_new();
+  for (const [name, { rows, merges }] of Object.entries(sheets)) {
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    if (merges) ws["!merges"] = merges;
+    XLSX.utils.book_append_sheet(wb, ws, name);
+  }
+  return XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+}
+
 /** 「設定」シートが先頭にある実ファイル相当のブック */
 function realFileLikeBuffer(): ArrayBuffer {
   return makeWorkbook({
@@ -324,6 +337,104 @@ describe("parseMonthlyExcel: totalSalesは「キャスト実績」シートの�
       expect(trace.selectedValue).toBe(515843);
       expect(trace.fallbackOccurred).toBe(true);
     });
+  });
+});
+
+describe("parseMonthlyExcel: 「キャスト実績」シートの結合セル氏名列（本番で報告された不具合の再現）", () => {
+  /**
+   * 本番の診断表示で判明した不具合の再現。「キャスト実績」シートは名前列
+   * （「キャスト名」）が3列にまたがる結合セルになっており（区分／No／キャスト名）、
+   * 従来はこの補正（resolveMergedNameColumn）がscoutedBy補完の探索でしか
+   * 使われておらず、採用シート選択・findTotalSalesOverrideが使う
+   * scanSheet/extractRowsの一般経路では未適用だった。
+   *
+   * その結果、名前列が結合セルの先頭列（区分列。ほとんどの行が空欄）を
+   * 指してしまい、ほぼ全行が「名前が空欄」として除外され、5行連続無効行で
+   * 走査が打ち切られる（MAX_CONSECUTIVE_INVALID=5）ため、有効行が1件しか
+   * 検出されない不具合が起きていた（診断表示で「有効行:1」として確認された）。
+   */
+  function castJissekiRowsWithMergedNameHeader(): unknown[][] {
+    // A〜C列が結合され、見出し文字列「キャスト名」の実体は結合範囲の先頭列（A列）に
+    // 入っている（実際のExcelの結合セルの挙動：値は左上のセルのみが持つ）。
+    // 一方、各行の実データはA列（区分・ほぼ空欄）でもB列（No・数値のみ）でもなく、
+    // C列（キャスト名の実体）に入っている。素直にヘッダー文字列の位置（A列）を
+    // 名前列とみなすと、データ行はA列がほぼ空欄のため大半が「名前が空欄」と
+    // 判定され誤って除外される
+    return [
+      ["キャスト名", "", "", "時給", "売上"],
+      ["", 1, "えま", 5000, 225221],
+      ["", 2, "まな", 4800, 56072],
+      ["", 3, "りの", 5200, 0], // 売上0円のキャストも有効行として採用されるべき
+      ["", 4, "りな", 4500, 120000],
+      ["", 5, "みく", 4500, 98000],
+      ["", 6, "みお", 4500, 76000],
+      ["", 7, "みなみ", 4500, 65000],
+      ["", 8, "みほ", 4500, 54000],
+    ];
+  }
+  const castJissekiMerges: XLSX.Range[] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }]; // ヘッダー行のA〜C列が結合
+
+  function ichiranRowsForManyCasts(): unknown[][] {
+    const header = ["源氏名", "時給", "出勤日数", "出勤時間", "本指名", "場内", "同伴", "合計", "支給額", "備考"];
+    const names = ["えま", "まな", "りの", "りな", "みく", "みお", "みなみ", "みほ"];
+    // 「一覧」シート自身の「合計」列は、キャスト実績シートとは無関係な値にしてある
+    return [header, ...names.map((n, i) => [n, 5000, 20, 100, 5, 2, 1, 111111 + i, 400000, ""])];
+  }
+
+  it("結合セルの名前列でも「キャスト実績」シートの有効行が実際のキャスト人数分になる", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForManyCasts() },
+      キャスト実績: { rows: castJissekiRowsWithMergedNameHeader(), merges: castJissekiMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+    const diag = result.totalSalesSheetDiagnostics.find((d) => d.name === "キャスト実績")!;
+    expect(diag.validRowCount).toBe(8); // 1件ではなく実際の8名分
+  });
+
+  it("えま・まな・りの（0円）がキャスト実績シートの売上を採用し、fallbackが発生しない", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForManyCasts() },
+      キャスト実績: { rows: castJissekiRowsWithMergedNameHeader(), merges: castJissekiMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+
+    const ema = result.totalSalesTrace.find((t) => t.castName === "えま")!;
+    expect(ema.selectedValue).toBe(225221);
+    expect(ema.selectedSheet).toBe("キャスト実績");
+    expect(ema.castPerformanceValue).toBe(225221);
+    expect(ema.fallbackOccurred).toBe(false);
+
+    const mana = result.totalSalesTrace.find((t) => t.castName === "まな")!;
+    expect(mana.selectedValue).toBe(56072);
+    expect(mana.selectedSheet).toBe("キャスト実績");
+    expect(mana.fallbackOccurred).toBe(false);
+
+    // 売上0円のキャストも氏名一致として扱われ、フォールバックしない
+    const rino = result.totalSalesTrace.find((t) => t.castName === "りの")!;
+    expect(rino.selectedValue).toBe(0);
+    expect(rino.selectedSheet).toBe("キャスト実績");
+    expect(rino.castPerformanceValue).toBe(0);
+    expect(rino.fallbackOccurred).toBe(false);
+
+    // 残りのキャストも全員フォールバックしない
+    for (const name of ["りな", "みく", "みお", "みなみ", "みほ"]) {
+      const t = result.totalSalesTrace.find((tr) => tr.castName === name)!;
+      expect(t.fallbackOccurred, `${name}がフォールバックしないはず`).toBe(false);
+    }
+  });
+
+  it("結合セルの補正後も、行データ本体（本指名・場内・同伴・支給額）は引き続き「一覧」シートから読む", () => {
+    const buf = makeWorkbookWithMerges({
+      一覧: { rows: ichiranRowsForManyCasts() },
+      キャスト実績: { rows: castJissekiRowsWithMergedNameHeader(), merges: castJissekiMerges },
+    });
+    const result = parseMonthlyExcel(buf);
+    expect(result.sheetName).toBe("一覧");
+    const ema = result.rows.find((r) => r.name === "えま")!;
+    expect(ema.honshimeiCount).toBe(5);
+    expect(ema.jounaiCount).toBe(2);
+    expect(ema.douhan).toBe(1);
+    expect(ema.payment).toBe(400000);
   });
 });
 
