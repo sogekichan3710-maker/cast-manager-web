@@ -61,14 +61,14 @@ export function CastDetailSections({ cast }: { cast: CastWithId }) {
   useEffect(() => {
     const onErr = (m: string) => setError(m);
     const unsubs = [
-      subscribeMonthlyResultsByCast(cast.id, setResults, onErr),
-      subscribeInterviews(cast.id, setInterviews, onErr),
-      subscribeGoals(cast.id, setGoals, onErr),
-      subscribeMotivations(cast.id, setMotivations, onErr),
-      subscribeWageHistory(cast.id, setWageHistory, onErr),
+      subscribeMonthlyResultsByCast(cast.id, cast.storeId, setResults, onErr),
+      subscribeInterviews(cast.id, cast.storeId, setInterviews, onErr),
+      subscribeGoals(cast.id, cast.storeId, setGoals, onErr),
+      subscribeMotivations(cast.id, cast.storeId, setMotivations, onErr),
+      subscribeWageHistory(cast.id, cast.storeId, setWageHistory, onErr),
     ];
     return () => unsubs.forEach((u) => u());
-  }, [cast.id]);
+  }, [cast.id, cast.storeId]);
 
   // ── 今月成績・年間成績（既存版 openCastDetail のサマリーと同一定義） ──
   const cm = currentMonth();

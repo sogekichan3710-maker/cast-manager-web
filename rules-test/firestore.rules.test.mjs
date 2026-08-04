@@ -28,7 +28,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, writeBatch } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, where, serverTimestamp, writeBatch } from "firebase/firestore";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -495,6 +495,37 @@ describe("PR3: 面談・目標・モチベーション・時給履歴", () => {
   it("viewerは面談を作成できない", async () => {
     await assertFails(
       setDoc(doc(dbAs(UIDS.viewerV), "interviews", "iv3"), ivData(UIDS.viewerV))
+    );
+  });
+
+  // 回帰テスト: castIdのみのクエリはFirestoreが「起こりうる全結果」に対して
+  // ルールを証明できずadmin/viewerでpermission-deniedになる
+  // (ownerはrole判定のみのため発生しない・アプリのバグの実体だった)。
+  // castId+storeIdの複合絞り込みであれば証明できて成功する
+  // (recordService.byCastQueryの実装と同じクエリ形)。
+  it("adminはcastId絞り込みのみのクエリでは面談一覧を読めない(Firestoreがstoreidを証明できないため)", async () => {
+    await assertFails(
+      getDocs(
+        query(collection(dbAs(UIDS.adminV), "interviews"), where("castId", "==", "cast_virgo_1"))
+      )
+    );
+  });
+  it("adminはcastId+storeId絞り込みのクエリなら担当店舗の面談一覧を読める", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(
+          collection(dbAs(UIDS.adminV), "interviews"),
+          where("castId", "==", "cast_virgo_1"),
+          where("storeId", "==", STORE_VIRGO)
+        )
+      )
+    );
+  });
+  it("ownerはcastId絞り込みのみのクエリでも面談一覧を読める(role判定のみのため)", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(collection(dbAs(UIDS.owner), "interviews"), where("castId", "==", "cast_virgo_1"))
+      )
     );
   });
 });
