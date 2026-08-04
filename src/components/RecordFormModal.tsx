@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { describeFirebaseError, logFirebaseError } from "@/lib/firebaseError";
 import { emptyRecordInput, saveRecord, type RecordInput } from "@/services/recordService";
 import {
   FOLLOW_NEEDS,
@@ -52,7 +53,13 @@ export function RecordFormModal({
       await saveRecord(firebaseUser.uid, userDoc?.displayName ?? "", input);
       onSaved();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "保存に失敗しました");
+      logFirebaseError("面談記録の保存エラー", err, {
+        userId: firebaseUser.uid,
+        role: userDoc?.role,
+        castId: input.castId,
+        storeId: input.storeId,
+      });
+      setError(describeFirebaseError(err));
       setSaving(false);
     }
   }

@@ -12,6 +12,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "@/lib/firebase";
+import { describeFirebaseError } from "@/lib/firebaseError";
 import { addAuditLogToBatch, addAuditLogToTransaction } from "@/services/auditLogService";
 import type {
   FollowNeed,
@@ -33,33 +34,51 @@ import type {
  * 1つのフォームから同時保存する統合方式のため、その挙動を維持する。
  */
 
-function byCastQuery(col: string, castId: string) {
-  return query(collection(getDb(), col), where("castId", "==", castId));
+/**
+ * castId のみでの絞り込みは、Firestore Rules がstoreId起点のアクセス制御
+ * （canAccessStore）を行っているowner以外のロール（admin/viewer）で
+ * permission-deniedになる。Firestoreはクエリを「起こりうる全結果」に対して
+ * 検証するため、クエリ条件に含まれないstoreIdをRules側で参照すると、
+ * ownerはrole判定のみで許可される一方、admin/viewerはstoreIdの値を
+ * 証明できず拒否される。storeIdもクエリ条件に含めることで、Rules側が
+ * request.resource.data.storeIdの値をクエリから証明できるようにする。
+ */
+function byCastQuery(col: string, castId: string, storeId: string) {
+  return query(
+    collection(getDb(), col),
+    where("castId", "==", castId),
+    where("storeId", "==", storeId)
+  );
 }
 
 export function subscribeInterviews(
   castId: string,
+  storeId: string,
   onChange: (items: InterviewWithId[]) => void,
   onError: (m: string) => void
 ): Unsubscribe {
   return onSnapshot(
-    byCastQuery("interviews", castId),
+    byCastQuery("interviews", castId, storeId),
     (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as InterviewDoc) }));
       list.sort((a, b) => (b.date || "").localeCompare(a.date || "")); // 新しい日付順
       onChange(list);
     },
-    (e) => onError(e.message)
+    (e) => {
+      console.error("面談一覧の読み込みエラー", { code: e.code, message: e.message, castId, storeId });
+      onError(describeFirebaseError(e));
+    }
   );
 }
 
 export function subscribeGoals(
   castId: string,
+  storeId: string,
   onChange: (items: GoalWithId[]) => void,
   onError: (m: string) => void
 ): Unsubscribe {
   return onSnapshot(
-    byCastQuery("goals", castId),
+    byCastQuery("goals", castId, storeId),
     (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as GoalDoc) }));
       list.sort((a, b) => (b.month || "").localeCompare(a.month || "")); // 新しい月順
@@ -71,11 +90,12 @@ export function subscribeGoals(
 
 export function subscribeMotivations(
   castId: string,
+  storeId: string,
   onChange: (items: MotivationWithId[]) => void,
   onError: (m: string) => void
 ): Unsubscribe {
   return onSnapshot(
-    byCastQuery("motivations", castId),
+    byCastQuery("motivations", castId, storeId),
     (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as MotivationDoc) }));
       list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -87,11 +107,12 @@ export function subscribeMotivations(
 
 export function subscribeWageHistory(
   castId: string,
+  storeId: string,
   onChange: (items: WageHistoryWithId[]) => void,
   onError: (m: string) => void
 ): Unsubscribe {
   return onSnapshot(
-    byCastQuery("wageHistory", castId),
+    byCastQuery("wageHistory", castId, storeId),
     (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as WageHistoryDoc) }));
       list.sort((a, b) => (b.effectiveMonth || "").localeCompare(a.effectiveMonth || ""));

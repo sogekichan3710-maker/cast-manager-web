@@ -94,11 +94,16 @@ export function subscribeMonthlyResultsByMonth(
 /** 指定キャストの全成績を購読（詳細ページ・グラフ用。月の昇順=古い月→新しい月） */
 export function subscribeMonthlyResultsByCast(
   castId: string,
+  storeId: string,
   onChange: (results: MonthlyResultWithId[]) => void,
   onError: (message: string) => void
 ): Unsubscribe {
   return onSnapshot(
-    query(collection(getDb(), COL), where("castId", "==", castId)),
+    query(
+      collection(getDb(), COL),
+      where("castId", "==", castId),
+      where("storeId", "==", storeId)
+    ),
     (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as MonthlyResultDoc) }));
       list.sort((a, b) => a.month.localeCompare(b.month)); // YYYY-MM は文字列比較で時系列順
