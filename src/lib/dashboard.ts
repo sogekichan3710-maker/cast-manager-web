@@ -26,6 +26,19 @@ export function prevMonthOf(month: string): string | null {
   return `${y}-${String(mo).padStart(2, "0")}`;
 }
 
+/** 次月の YYYY-MM を返す（prevMonthOfと対になる一覧画面の月送り用） */
+export function nextMonthOf(month: string): string | null {
+  const m = month.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  let y = Number(m[1]);
+  let mo = Number(m[2]) + 1;
+  if (mo === 13) {
+    y++;
+    mo = 1;
+  }
+  return `${y}-${String(mo).padStart(2, "0")}`;
+}
+
 /** 対象月から過去n個の YYYY-MM 配列（古い月→新しい月） */
 export function monthRangeEndingAt(month: string, n: number): string[] {
   const m = month.match(/^(\d{4})-(\d{2})$/);
@@ -349,6 +362,95 @@ export function calcUpcomingInterviews(params: {
     .slice(0, params.limit ?? 5)
     .map((iv) => ({ cast: castOf.get(iv.castId)!, interview: iv }))
     .filter((x) => !!x.cast);
+}
+
+// ── 面談済み一覧（ダッシュボード「今月の面談済み」カード・月別一覧画面） ──
+
+function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+/**
+ * 面談日を YYYY-MM-DD 文字列へ正規化する。
+ * 通常の登録・編集フォームは常に文字列（YYYY-MM-DD）で保存するが、
+ * レガシー移行データ等で異なる区切り文字や、想定外の型（Firestore
+ * Timestamp・Date）が混在していても判定できるよう吸収する。
+ * 解釈できない値は null（面談済み判定・一覧のいずれからも除外する）。
+ */
+export function normalizeInterviewDate(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (
+    typeof value === "object" &&
+    typeof (value as { toDate?: unknown }).toDate === "function"
+  ) {
+    const d = (value as { toDate: () => Date }).toDate();
+    return Number.isNaN(d.getTime()) ? null : toDateKey(d);
+  }
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : toDateKey(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : toDateKey(d);
+  }
+  return null;
+}
+
+/** 面談種別の表示ラベル（既存データは 'face-to-face' 固定だが将来値にも対応） */
+export function interviewTypeLabel(type: string): string {
+  const labels: Record<string, string> = { "face-to-face": "対面" };
+  return labels[type] ?? (type || "面談");
+}
+
+export interface CompletedInterviewEntry {
+  cast: CastWithId;
+  interview: InterviewWithId;
+  /** 正規化済み面談日（YYYY-MM-DD） */
+  dateKey: string;
+}
+
+/**
+ * 指定月に実施済みの面談一覧（面談日時が新しい順・同日は登録が新しい順）。
+ * - 対象は実際に保存されている interviews データのみ（未面談予定は対象外）
+ * - 面談日が今日より後（未来日）のものは「予定」扱いとして面談済みに含めない
+ * - 同一キャストが同月に複数回面談していてもキャスト単位でまとめず、
+ *   面談1件ごとに個別のエントリを返す
+ */
+export function calcCompletedInterviews(params: {
+  month: string;
+  casts: CastWithId[];
+  interviews: InterviewWithId[];
+  now?: Date;
+  limit?: number;
+}): CompletedInterviewEntry[] {
+  const { month, casts, interviews } = params;
+  const now = params.now ?? new Date();
+  const todayKey = toDateKey(now);
+  const castOf = new Map(casts.map((c) => [c.id, c]));
+
+  return interviews
+    .map((iv) => ({
+      cast: castOf.get(iv.castId) ?? null,
+      interview: iv,
+      dateKey: normalizeInterviewDate(iv.date),
+    }))
+    .filter(
+      (x): x is CompletedInterviewEntry =>
+        !!x.cast && !!x.dateKey && x.dateKey.slice(0, 7) === month && x.dateKey <= todayKey
+    )
+    .sort((a, b) => {
+      const byDate = b.dateKey.localeCompare(a.dateKey);
+      if (byDate !== 0) return byDate;
+      const ta = a.interview.createdAt?.toMillis?.() ?? 0;
+      const tb = b.interview.createdAt?.toMillis?.() ?? 0;
+      return tb - ta;
+    })
+    .slice(0, params.limit ?? Infinity);
 }
 
 // ── 目標達成状況 ─────────────────────────────────────────────

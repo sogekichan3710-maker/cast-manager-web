@@ -10,6 +10,7 @@ import { useStores } from "@/hooks/useStores";
 import {
   avgWageTrend12,
   calcAge,
+  calcCompletedInterviews,
   calcDashboardKpi,
   calcFollowHigh,
   calcGoalStatus,
@@ -17,6 +18,7 @@ import {
   calcUpcomingInterviews,
   daysUntilBirthday,
   getBirthdayCasts,
+  interviewTypeLabel,
   type GoalStatusEntry,
 } from "@/lib/dashboard";
 import {
@@ -76,6 +78,14 @@ export default function DashboardPage() {
   const nextM = thisM === 12 ? 1 : thisM + 1;
   const bdThis = useMemo(() => getBirthdayCasts(casts, thisM), [casts, thisM]);
   const bdNext = useMemo(() => getBirthdayCasts(casts, nextM), [casts, nextM]);
+
+  // ── 今月の面談済み（KPI用の月選択とは独立し、常に実際の当月を対象とする） ──
+  const thisMonthKey = currentMonth();
+  const completedThisMonth = useMemo(
+    () => calcCompletedInterviews({ month: thisMonthKey, casts, interviews }),
+    [thisMonthKey, casts, interviews]
+  );
+  const storeName = (id: string) => accessibleStores.find((s) => s.id === id)?.name ?? id;
 
   const hasData = results.some((r) => r.month === month);
 
@@ -396,6 +406,45 @@ export default function DashboardPage() {
                 )}
               </section>
             </div>
+
+            {/* ── 今月の面談済み ── */}
+            <section className="detail-card" style={{ marginTop: 14 }}>
+              <div className="dash-section-head">
+                <h2 className="detail-heading">
+                  ✅ 今月の面談済み　{completedThisMonth.length}件
+                </h2>
+                <Link
+                  href={`/dashboard/completed-interviews?store=${storeFilter}`}
+                  className="dash-detail-link"
+                >
+                  全員見る →
+                </Link>
+              </div>
+              {completedThisMonth.length === 0 ? (
+                <p className="empty-note">{monthToJa(thisMonthKey)}の面談済みはまだありません</p>
+              ) : (
+                completedThisMonth.slice(0, 5).map((x) => (
+                  <div key={x.interview.id} className="record-item">
+                    <div className="record-head">
+                      <strong>{x.dateKey}</strong>
+                      <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                        {x.cast.stageName}
+                      </Link>
+                      <span className="dim">{storeName(x.cast.storeId)}</span>
+                      <span className="dim">担当: {x.interview.interviewer || "-"}</span>
+                      <span className="badge badge-gray">
+                        {interviewTypeLabel(x.interview.type)}
+                      </span>
+                      <div style={{ marginLeft: "auto" }}>
+                        <Link href={`/casts/${x.cast.id}`} className="btn btn-ghost btn-sm">
+                          詳細
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </section>
 
             {canEdit && (
               <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
