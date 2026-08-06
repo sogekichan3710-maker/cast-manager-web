@@ -261,10 +261,15 @@ export async function saveRecord(
       throw new Error("目標の対象月を選択してください");
     }
     // 同一キャスト×同一月の既存目標を検索（storeIdも一致条件に含める）
+    // storeIdをクエリ条件に含めないと、Firestoreはクエリを「起こりうる全結果」に
+    // 対して権限を証明できず、admin/viewerがpermission-deniedになる
+    // （goals読み取りRulesのcanAccessStore(resource.data.storeId)を参照するため。
+    //  byCastQueryと同じ理由。owner はrole判定のみのため影響を受けない）。
     const existing = await getDocs(
       query(
         collection(db, "goals"),
         where("castId", "==", input.castId),
+        where("storeId", "==", input.storeId),
         where("month", "==", input.goalMonth)
       )
     );
