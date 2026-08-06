@@ -528,6 +528,35 @@ describe("PR3: 面談・目標・モチベーション・時給履歴", () => {
       )
     );
   });
+
+  // 回帰テスト: recordService.saveRecord()が面談記録の追加時、目標欄が入力
+  // されていると同月の既存目標をcastId+monthのみで検索していた
+  // （storeId条件が抜けていたバグ）。上のinterviewsと同じ理由でadmin/viewer
+  // がpermission-deniedになり、同じbatchで作成する面談記録も保存できなく
+  // なっていた。castId+storeId+monthの複合絞り込みなら証明できて成功する。
+  it("adminはcastId+month絞り込みのみのクエリでは目標を読めない(Firestoreがstoreidを証明できないため)", async () => {
+    await assertFails(
+      getDocs(
+        query(
+          collection(dbAs(UIDS.adminV), "goals"),
+          where("castId", "==", "cast_virgo_1"),
+          where("month", "==", "2026-07")
+        )
+      )
+    );
+  });
+  it("adminはcastId+storeId+month絞り込みのクエリなら担当店舗の目標を読める(saveRecordの実装と同じクエリ形)", async () => {
+    await assertSucceeds(
+      getDocs(
+        query(
+          collection(dbAs(UIDS.adminV), "goals"),
+          where("castId", "==", "cast_virgo_1"),
+          where("storeId", "==", STORE_VIRGO),
+          where("month", "==", "2026-07")
+        )
+      )
+    );
+  });
 });
 
 describe("PR2: createdBy/updatedBy偽装の防止", () => {
