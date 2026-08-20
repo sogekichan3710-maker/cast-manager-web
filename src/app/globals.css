@@ -139,6 +139,46 @@ select.form-input {
   cursor: pointer;
 }
 
+/*
+ * ラベル行（ラベル + 補助操作ボタン）。
+ * 日付入力は端末によっては一度選んだ値を消せない（iOS等のネイティブ
+ * ピッカーにクリア操作が無い）ため、ラベル右側に「未設定に戻す」を置く。
+ */
+.form-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.form-label-row label {
+  margin-bottom: 0;
+}
+.field-clear-btn {
+  flex: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--acc2);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.field-clear-btn:hover:not(:disabled) {
+  opacity: 0.8;
+}
+.field-clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.field-clear-btn:focus-visible {
+  outline: 2px solid var(--acc2);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* ---------- ボタン ---------- */
 .btn {
   display: inline-flex;

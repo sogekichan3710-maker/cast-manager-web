@@ -48,8 +48,9 @@ export function buildExportWorkbook(data: ExportData): XLSX.WorkBook {
     時給: c.hourlyWage,
     ランク: c.rank,
     在籍状態: c.status,
-    入店日: c.joinDate,
-    退店日: c.leftDate,
+    // 未設定（空文字）や旧データのフィールド欠落（undefined）でも空セルにする
+    入店日: c.joinDate ?? "",
+    退店日: c.leftDate ?? "",
     誕生日: c.birthday,
     電話: c.phone,
     LINE: c.line,
