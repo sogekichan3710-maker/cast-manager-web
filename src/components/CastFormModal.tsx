@@ -192,15 +192,12 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
               value={input.leftDate}
               onChange={(v) => set("leftDate", v)}
             />
-            <div className="form-group">
-              <label>誕生日</label>
-              <input
-                className="form-input"
-                type="date"
-                value={input.birthday}
-                onChange={(e) => set("birthday", e.target.value)}
-              />
-            </div>
+            <ClearableDateField
+              id="cast-birthday"
+              label="誕生日"
+              value={input.birthday}
+              onChange={(v) => set("birthday", v)}
+            />
             <div className="form-group">
               <label>電話番号</label>
               <input
@@ -234,19 +231,13 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
                 onChange={(e) => set("scoutedBy", e.target.value)}
               />
             </div>
-            <div className="form-group">
-              <label>ランキング対象開始日</label>
-              <input
-                className="form-input"
-                type="date"
-                value={input.rankingEligibleFrom}
-                onChange={(e) => set("rankingEligibleFrom", e.target.value)}
-              />
-              <p className="page-sub" style={{ marginTop: 4 }}>
-                未設定の場合、初回データ登録日から自動判定されます。過去のキャストで
-                実際の在籍開始日を指定したい場合のみ入力してください。
-              </p>
-            </div>
+            <ClearableDateField
+              id="cast-ranking-eligible-from"
+              label="ランキング対象開始日"
+              value={input.rankingEligibleFrom}
+              onChange={(v) => set("rankingEligibleFrom", v)}
+              hint="未設定の場合、初回データ登録日から自動判定されます。過去のキャストで実際の在籍開始日を指定したい場合のみ入力してください。"
+            />
             <div className="form-group">
               <label>目標売上（円）</label>
               <input
@@ -330,23 +321,33 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
 }
 
 /**
- * 日付入力（未設定に戻せる版）。
+ * 日付入力（未設定に戻せる版）。フォーム内のすべての日付項目で共用する。
  *
  * `<input type="date">` は端末・ブラウザによっては一度選択した値を
- * 消す手段が無い（iOSのホイールピッカー等）。入店日・退店日は
- * 「未設定」も正しい状態（Firestoreでは空文字で表現）なので、
- * 値がある間だけ「未設定に戻す」を出して確実にクリアできるようにする。
+ * 消す手段が無い（iOSのホイールピッカー等）。「未設定」も正しい状態
+ * である項目のために、値がある間だけ「未設定に戻す」を出して確実に
+ * クリアできるようにする。
+ *
+ * この部品が扱うのは常に YYYY-MM-DD の文字列（未設定 = 空文字）で、
+ * Firestoreへ何を書くかは各項目の保存処理（castService の
+ * normalizeInput）が決める:
+ * - 入店日 / 退店日 / 誕生日 … string のまま '' を保存
+ * - ランキング対象開始日 … dateStrToTimestamp('') により null を保存
  */
 function ClearableDateField({
   id,
   label,
   value,
   onChange,
+  hint,
 }: {
   id: string;
   label: string;
+  /** YYYY-MM-DD。空文字 = 未設定 */
   value: string;
   onChange: (value: string) => void;
+  /** 入力欄の下に出す補足説明（任意） */
+  hint?: string;
 }) {
   return (
     <div className="form-group">
@@ -370,6 +371,11 @@ function ClearableDateField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
+      {hint && (
+        <p className="page-sub" style={{ marginTop: 4 }}>
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
