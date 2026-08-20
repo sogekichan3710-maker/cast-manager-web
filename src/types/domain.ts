@@ -74,7 +74,13 @@ export interface CastDoc {
   hourlyWage: number;
   rank: Rank | "";
   status: CastStatus;
-  joinDate: string; // YYYY-MM-DD（既存ローカル版と同じフィールド名・文字列日付）
+  /**
+   * 入店日。YYYY-MM-DD（既存ローカル版と同じフィールド名・文字列日付）。
+   * 未設定は空文字 '' で表す（null や フィールド削除は使わない。
+   * 既存データ・Rules・Excel出力がすべて文字列前提のため）。
+   */
+  joinDate: string;
+  /** 退店日。joinDate と同じく YYYY-MM-DD / 未設定は空文字 '' */
   leftDate: string;
   birthday: string;
   phone: string;

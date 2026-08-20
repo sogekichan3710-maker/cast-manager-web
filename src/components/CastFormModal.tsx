@@ -180,24 +180,18 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
                 onChange={(e) => set("hourlyWage", Number(e.target.value))}
               />
             </div>
-            <div className="form-group">
-              <label>入店日</label>
-              <input
-                className="form-input"
-                type="date"
-                value={input.joinDate}
-                onChange={(e) => set("joinDate", e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label>退店日</label>
-              <input
-                className="form-input"
-                type="date"
-                value={input.leftDate}
-                onChange={(e) => set("leftDate", e.target.value)}
-              />
-            </div>
+            <ClearableDateField
+              id="cast-join-date"
+              label="入店日"
+              value={input.joinDate}
+              onChange={(v) => set("joinDate", v)}
+            />
+            <ClearableDateField
+              id="cast-left-date"
+              label="退店日"
+              value={input.leftDate}
+              onChange={(v) => set("leftDate", v)}
+            />
             <div className="form-group">
               <label>誕生日</label>
               <input
@@ -331,6 +325,51 @@ export function CastFormModal({ cast, defaultStoreId, stores, onClose, onSaved }
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 日付入力（未設定に戻せる版）。
+ *
+ * `<input type="date">` は端末・ブラウザによっては一度選択した値を
+ * 消す手段が無い（iOSのホイールピッカー等）。入店日・退店日は
+ * 「未設定」も正しい状態（Firestoreでは空文字で表現）なので、
+ * 値がある間だけ「未設定に戻す」を出して確実にクリアできるようにする。
+ */
+function ClearableDateField({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="form-group">
+      <div className="form-label-row">
+        <label htmlFor={id}>{label}</label>
+        {value !== "" && (
+          <button
+            type="button"
+            className="field-clear-btn"
+            aria-label={`${label}を未設定に戻す`}
+            onClick={() => onChange("")}
+          >
+            未設定に戻す
+          </button>
+        )}
+      </div>
+      <input
+        id={id}
+        className="form-input"
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }
