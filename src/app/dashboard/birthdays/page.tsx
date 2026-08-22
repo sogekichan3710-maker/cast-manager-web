@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
 import { useCasts } from "@/hooks/useCasts";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { calcAge, daysUntilBirthday, getBirthdayCasts } from "@/lib/dashboard";
 import { ALL_STORES_FILTER } from "@/types";
@@ -24,6 +25,9 @@ export default function BirthdaysListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts, loading } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
 
   const now = new Date();
   const thisM = now.getMonth() + 1;
@@ -81,7 +85,11 @@ export default function BirthdaysListPage() {
               return (
                 <div key={c.id} className="record-item">
                   <div className="record-head">
-                    <Link href={`/casts/${c.id}`} className="cast-link">
+                    <Link
+                      href={`/casts/${c.id}`}
+                      className="cast-link"
+                      style={{ color: storeColorOf(c.storeId) }}
+                    >
                       {c.stageName}
                     </Link>
                     {age != null && <span className="dim">{age + 1}歳になります</span>}

@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { AppHeader } from "@/components/AppHeader";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import {
   avgWageTrend12,
@@ -86,6 +87,8 @@ export default function DashboardPage() {
     [thisMonthKey, casts, interviews]
   );
   const storeName = (id: string) => accessibleStores.find((s) => s.id === id)?.name ?? id;
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
 
   const hasData = results.some((r) => r.month === month);
 
@@ -222,7 +225,11 @@ export default function DashboardPage() {
                   overdue.slice(0, 6).map((x) => (
                     <div key={x.cast.id} className="record-item">
                       <div className="record-head">
-                        <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                        <Link
+                          href={`/casts/${x.cast.id}`}
+                          className="cast-link"
+                          style={{ color: storeColorOf(x.cast.storeId) }}
+                        >
                           {x.cast.stageName}
                         </Link>
                         {x.noRecord ? (
@@ -277,7 +284,11 @@ export default function DashboardPage() {
                   followHigh.map((x) => (
                     <div key={x.cast.id} className="record-item">
                       <div className="record-head">
-                        <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                        <Link
+                          href={`/casts/${x.cast.id}`}
+                          className="cast-link"
+                          style={{ color: storeColorOf(x.cast.storeId) }}
+                        >
                           {x.cast.stageName}
                         </Link>
                         <span className="dim">最終面談 {x.interview.date}</span>
@@ -305,7 +316,11 @@ export default function DashboardPage() {
                     <div key={x.interview.id} className="record-item">
                       <div className="record-head">
                         <strong>{x.interview.nextDate}</strong>
-                        <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                        <Link
+                          href={`/casts/${x.cast.id}`}
+                          className="cast-link"
+                          style={{ color: storeColorOf(x.cast.storeId) }}
+                        >
                           {x.cast.stageName}
                         </Link>
                         {x.interview.nextTask && (
@@ -338,16 +353,16 @@ export default function DashboardPage() {
                       全達成🎉
                     </p>
                     {goalAchieved.slice(0, 4).map((x) => (
-                      <GoalRow key={x.goal.id} entry={x} />
+                      <GoalRow key={x.goal.id} entry={x} nameColor={storeColorOf(x.cast.storeId)} />
                     ))}
                   </>
                 ) : (
                   <>
                     {goalUnachieved.slice(0, 8).map((x) => (
-                      <GoalRow key={x.goal.id} entry={x} />
+                      <GoalRow key={x.goal.id} entry={x} nameColor={storeColorOf(x.cast.storeId)} />
                     ))}
                     {goalAchieved.slice(0, 4).map((x) => (
-                      <GoalRow key={x.goal.id} entry={x} />
+                      <GoalRow key={x.goal.id} entry={x} nameColor={storeColorOf(x.cast.storeId)} />
                     ))}
                   </>
                 )}
@@ -374,7 +389,11 @@ export default function DashboardPage() {
                     return (
                       <div key={c.id} className="record-item">
                         <div className="record-head">
-                          <Link href={`/casts/${c.id}`} className="cast-link">
+                          <Link
+                            href={`/casts/${c.id}`}
+                            className="cast-link"
+                            style={{ color: storeColorOf(c.storeId) }}
+                          >
                             {c.stageName}
                           </Link>
                           {age != null && (
@@ -427,7 +446,11 @@ export default function DashboardPage() {
                   <div key={x.interview.id} className="record-item">
                     <div className="record-head">
                       <strong>{x.dateKey}</strong>
-                      <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                      <Link
+                        href={`/casts/${x.cast.id}`}
+                        className="cast-link"
+                        style={{ color: storeColorOf(x.cast.storeId) }}
+                      >
                         {x.cast.stageName}
                       </Link>
                       <span className="dim">{storeName(x.cast.storeId)}</span>
@@ -495,11 +518,15 @@ function Kpi({
   );
 }
 
-function GoalRow({ entry }: { entry: GoalStatusEntry }) {
+function GoalRow({ entry, nameColor }: { entry: GoalStatusEntry; nameColor?: string }) {
   return (
     <div className="record-item">
       <div className="record-head">
-        <Link href={`/casts/${entry.cast.id}`} className="cast-link">
+        <Link
+          href={`/casts/${entry.cast.id}`}
+          className="cast-link"
+          style={{ color: nameColor }}
+        >
           {entry.cast.stageName}
         </Link>
         <span className={`badge ${entry.allAchieved ? "badge-green" : "badge-yellow"}`}>

@@ -9,6 +9,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { RankBadge, StatusBadge } from "@/components/Badges";
 import { CastDetailSections } from "@/components/CastDetailSections";
 import { CastFormModal } from "@/components/CastFormModal";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { subscribeCast } from "@/services/castService";
 import { isAdminOrAbove, type CastWithId } from "@/types";
@@ -26,6 +27,9 @@ export default function CastDetailPage() {
   const { userDoc } = useAuth();
   const canEdit = isAdminOrAbove(userDoc);
   const { accessibleStores } = useStores();
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
 
   const [cast, setCast] = useState<CastWithId | null>(null);
   const [state, setState] = useState<"loading" | "ok" | "notFound" | "denied" | "error">(
@@ -104,7 +108,7 @@ export default function CastDetailPage() {
             <div className="page-head">
               <div>
                 <h1 className="page-title" style={{ fontSize: 20 }}>
-                  {cast.stageName}
+                  <span style={{ color: storeColorOf(cast.storeId) }}>{cast.stageName}</span>
                   {cast.archived && (
                     <span className="badge badge-gray" style={{ marginLeft: 8 }}>
                       アーカイブ済み

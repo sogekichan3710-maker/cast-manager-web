@@ -7,8 +7,9 @@ import { AppHeader } from "@/components/AppHeader";
 import { DiffAmount } from "@/components/DiffAmount";
 import { MonthlyResultFormModal } from "@/components/MonthlyResultFormModal";
 import { useCasts } from "@/hooks/useCasts";
-import { lastUpdateAt, lastUpdateSource } from "@/lib/monthlyResultDiff";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
+import { lastUpdateAt, lastUpdateSource } from "@/lib/monthlyResultDiff";
 import {
   deleteMonthlyResult,
   subscribeMonthlyResultsByMonth,
@@ -53,6 +54,8 @@ export default function MonthlyPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const castOf = useMemo(() => {
     const m = new Map(casts.map((c) => [c.id, c]));
     return (id: string) => m.get(id) ?? null;
@@ -264,7 +267,12 @@ export default function MonthlyPage() {
                       }}
                     >
                       <td>
-                        <span className="cast-link">{c ? c.stageName : "?"}</span>
+                        <span
+                          className="cast-link"
+                          style={{ color: c ? storeColorOf(c.storeId) : undefined }}
+                        >
+                          {c ? c.stageName : "?"}
+                        </span>
                       </td>
                       <td
                         className="num"

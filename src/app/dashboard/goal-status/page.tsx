@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { calcGoalStatus, type GoalStatusEntry } from "@/lib/dashboard";
 import { ALL_STORES_FILTER, currentMonth, monthToJa } from "@/types";
@@ -28,6 +29,9 @@ export default function GoalStatusListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const { results, goals, loading } = useDashboardData(targetStoreIds);
 
   const [q, setQ] = useState("");
@@ -93,7 +97,7 @@ export default function GoalStatusListPage() {
         ) : (
           <section className="detail-card">
             {filtered.map((x) => (
-              <GoalRow key={x.goal.id} entry={x} />
+              <GoalRow key={x.goal.id} entry={x} nameColor={storeColorOf(x.cast.storeId)} />
             ))}
           </section>
         )}
@@ -102,11 +106,15 @@ export default function GoalStatusListPage() {
   );
 }
 
-function GoalRow({ entry }: { entry: GoalStatusEntry }) {
+function GoalRow({ entry, nameColor }: { entry: GoalStatusEntry; nameColor?: string }) {
   return (
     <div className="record-item">
       <div className="record-head">
-        <Link href={`/casts/${entry.cast.id}`} className="cast-link">
+        <Link
+          href={`/casts/${entry.cast.id}`}
+          className="cast-link"
+          style={{ color: nameColor }}
+        >
           {entry.cast.stageName}
         </Link>
         <span className={`badge ${entry.allAchieved ? "badge-green" : "badge-yellow"}`}>
