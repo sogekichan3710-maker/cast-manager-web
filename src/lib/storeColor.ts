@@ -79,6 +79,16 @@ function mix(a: Rgb, b: Rgb, ratio: number): Rgb {
 }
 
 /**
+ * 各チャンネルを整数へ丸める。
+ * 補正の判定は必ずこの丸め後の値（= 実際に返すHEXと同じ色）で行う。
+ * 丸める前の小数RGBで判定すると、返した色を再計算したときに
+ * わずかにコントラスト比が閾値を下回ることがあるため。
+ */
+function roundRgb({ r, g, b }: Rgb): Rgb {
+  return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+}
+
+/**
  * 店舗カラーを、テーマ背景の上で読める文字色に補正して返す。
  * - color が未設定・解析不能なら null（呼び出し側は色指定なし＝現在の文字色のまま）
  * - 既に十分なコントラストがあれば元の色をそのまま返す
@@ -97,7 +107,7 @@ export function readableStoreColor(
   // ダークテーマは白へ、ライトテーマは黒へ寄せて明度差をつける
   const target: Rgb = theme === "dark" ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
   for (let step = 1; step <= 20; step++) {
-    const candidate = mix(rgb, target, step / 20);
+    const candidate = roundRgb(mix(rgb, target, step / 20));
     if (contrastRatio(candidate, bg) >= MIN_CONTRAST) return toHex(candidate);
   }
   return toHex(target);
