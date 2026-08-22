@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import {
   calcCompletedInterviews,
@@ -32,6 +33,9 @@ export default function CompletedInterviewsListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const { interviews, loading } = useDashboardData(targetStoreIds);
 
   const [month, setMonth] = useState(() => currentMonth());
@@ -92,7 +96,11 @@ export default function CompletedInterviewsListPage() {
               <div key={x.interview.id} className="record-item">
                 <div className="record-head">
                   <strong>{x.dateKey}</strong>
-                  <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                  <Link
+                    href={`/casts/${x.cast.id}`}
+                    className="cast-link"
+                    style={{ color: storeColorOf(x.cast.storeId) }}
+                  >
                     {x.cast.stageName}
                   </Link>
                   <span className="dim">{storeName(x.cast.storeId)}</span>

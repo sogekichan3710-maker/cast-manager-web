@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { calcFollowHigh } from "@/lib/dashboard";
 import { ALL_STORES_FILTER } from "@/types";
@@ -26,6 +27,9 @@ export default function FollowHighListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const { interviews, loading } = useDashboardData(targetStoreIds);
 
   const [q, setQ] = useState("");
@@ -75,7 +79,11 @@ export default function FollowHighListPage() {
             {filtered.map((x) => (
               <div key={x.cast.id} className="record-item">
                 <div className="record-head">
-                  <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                  <Link
+                    href={`/casts/${x.cast.id}`}
+                    className="cast-link"
+                    style={{ color: storeColorOf(x.cast.storeId) }}
+                  >
                     {x.cast.stageName}
                   </Link>
                   <span className="dim">最終面談 {x.interview.date}</span>

@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { calcUpcomingInterviews } from "@/lib/dashboard";
 import { ALL_STORES_FILTER } from "@/types";
@@ -26,6 +27,9 @@ export default function UpcomingInterviewsListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const { interviews, loading } = useDashboardData(targetStoreIds);
 
   const [q, setQ] = useState("");
@@ -79,7 +83,11 @@ export default function UpcomingInterviewsListPage() {
               <div key={x.interview.id} className="record-item">
                 <div className="record-head">
                   <strong>{x.interview.nextDate}</strong>
-                  <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                  <Link
+                    href={`/casts/${x.cast.id}`}
+                    className="cast-link"
+                    style={{ color: storeColorOf(x.cast.storeId) }}
+                  >
                     {x.cast.stageName}
                   </Link>
                   {x.interview.nextTask && <span className="dim">{x.interview.nextTask}</span>}

@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { RankBadge, StatusBadge } from "@/components/Badges";
 import { CastFormModal } from "@/components/CastFormModal";
 import { useCasts } from "@/hooks/useCasts";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { archiveCast, restoreCast } from "@/services/castService";
 import {
@@ -37,6 +38,9 @@ export default function CastsPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts, loading: castsLoading, error: castsError, refresh } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
 
   const storeNameOf = useMemo(() => {
     const m = new Map(accessibleStores.map((s) => [s.id, s.name]));
@@ -224,7 +228,11 @@ export default function CastsPage() {
                 {filtered.map((c) => (
                   <tr key={c.id} className={c.archived ? "row-archived" : ""}>
                     <td>
-                      <Link href={`/casts/${c.id}`} className="cast-link">
+                      <Link
+                        href={`/casts/${c.id}`}
+                        className="cast-link"
+                        style={{ color: storeColorOf(c.storeId) }}
+                      >
                         {c.stageName}
                       </Link>
                       {c.archived && <span className="badge badge-gray">アーカイブ</span>}

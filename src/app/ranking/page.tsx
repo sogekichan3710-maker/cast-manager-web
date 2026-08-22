@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
 import { AppHeader } from "@/components/AppHeader";
 import { useCasts } from "@/hooks/useCasts";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { RANK_CATS, buildRanking } from "@/lib/ranking";
 import { subscribeMonthlyResultsByMonth } from "@/services/monthlyResultService";
@@ -34,6 +35,8 @@ export default function RankingPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
 
   const [results, setResults] = useState<MonthlyResultWithId[]>([]);
   const [loading, setLoading] = useState(true);
@@ -161,7 +164,12 @@ export default function RankingPage() {
                     title={`castId: ${r.castId} ／ monthlyResultsドキュメントID: ${r.id}`}
                   >
                     <span className={`rank-num ${medal}`}>{i + 1}</span>
-                    <span className="rank-name">{name}</span>
+                    <span
+                      className="rank-name"
+                      style={{ color: c ? storeColorOf(c.storeId) : undefined }}
+                    >
+                      {name}
+                    </span>
                     <span className="rank-val">
                       {cat.fmt(val)}
                       {sub && <span className="rank-sub">{sub}</span>}

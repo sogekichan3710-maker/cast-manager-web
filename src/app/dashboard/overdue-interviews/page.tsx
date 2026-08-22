@@ -7,6 +7,7 @@ import { AppHeader } from "@/components/AppHeader";
 import { DeleteInterviewButton } from "@/components/DeleteInterviewButton";
 import { useCasts } from "@/hooks/useCasts";
 import { useDashboardData } from "@/hooks/useDashboardData";
+import { useStoreColor } from "@/hooks/useStoreColor";
 import { useStores } from "@/hooks/useStores";
 import { calcOverdueInterviews } from "@/lib/dashboard";
 import { ALL_STORES_FILTER } from "@/types";
@@ -27,6 +28,9 @@ export default function OverdueInterviewsListPage() {
   }, [storeFilter, accessibleStores]);
 
   const { casts } = useCasts(targetStoreIds);
+
+  // 店舗の設定カラー（未設定なら undefined ＝ 既存の文字色のまま）
+  const storeColorOf = useStoreColor(accessibleStores);
   const { interviews, motivations, loading } = useDashboardData(targetStoreIds);
 
   const storeName = (id: string) => accessibleStores.find((s) => s.id === id)?.name ?? id;
@@ -83,7 +87,11 @@ export default function OverdueInterviewsListPage() {
             {filtered.map((x) => (
               <div key={x.cast.id} className="record-item">
                 <div className="record-head">
-                  <Link href={`/casts/${x.cast.id}`} className="cast-link">
+                  <Link
+                    href={`/casts/${x.cast.id}`}
+                    className="cast-link"
+                    style={{ color: storeColorOf(x.cast.storeId) }}
+                  >
                     {x.cast.stageName}
                   </Link>
                   <span className="dim">{storeName(x.cast.storeId)}</span>
